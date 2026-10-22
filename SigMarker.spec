@@ -3,6 +3,15 @@
 import os
 import sys
 from pathlib import Path
+from importlib.metadata import distribution
+
+# pi-heif 的 Windows wheel 把 DLL 放在 site-packages 根目录而非包内。
+# 只收集该发行包登记的库，避免扫描并带入其他工具的 DLL。
+heif_binaries = []
+heif_distribution = distribution('pi-heif')
+for relative in heif_distribution.files or ():
+    if relative.suffix.lower() == '.dll':
+        heif_binaries.append((str(heif_distribution.locate_file(relative)), '.'))
 
 # 外部工具的 PATH 可能带有同名但 ABI 不兼容的 ICU/UCRT DLL。
 # 只影响本次构建进程, 不修改用户的系统环境变量。
@@ -16,8 +25,8 @@ if sys.platform == 'win32':
 a = Analysis(
     ['main.py'],
     pathex=[SPECPATH],
-    binaries=[],
-    datas=[],
+    binaries=heif_binaries,
+    datas=[(str(Path(SPECPATH) / 'sigmarker' / 'assets' / 'synthetic.heic'), 'sigmarker/assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -4,3 +4,5 @@ numpy
 PyMuPDF
 opencv-python
 pypdf>=5.1
+qrcode[pil]==8.2
+pi-heif==1.4.0

@@ -11,9 +11,9 @@ from datetime import datetime
 from io import BytesIO
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QSettings, QTimer, QEvent, pyqtSignal, QMimeData
+from PyQt6.QtCore import Qt, QRectF, QPointF, QSettings, QTimer, QEvent, pyqtSignal, QMimeData, QStandardPaths
 from PyQt6.QtGui import (
     QAction, QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPainterPath,
 )
@@ -37,9 +37,11 @@ from .sigextract import (
 )
 from .stamp_import import append_stamp
 from .clipboard_image import clipboard_payloads, set_windows_clipboard
+from .image_io import load_image
+from .phone_dialog import PhoneImportDialog
 
 # 支持拖入/打开的扩展名
-_SUPPORTED_EXTS = ('.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+_SUPPORTED_EXTS = ('.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.heic', '.heif')
 APP_STYLE = 'windows11'
 
 
@@ -285,6 +287,8 @@ class MainWindow(QMainWindow):
         self._pix_item: QGraphicsPixmapItem | None = None
         self._crop_item: CropRectItem | None = None
         self._source_path = ''
+        self._phone_photo = None
+        self._phone_dialog = None
         self._wm_image = None
         self._params = self._load_params()   # 上次会话的参数 (无则用默认)
         self._preview_timer = QTimer(self)
@@ -322,6 +326,9 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
         if event.isAccepted():
             self._preview_timer.stop()
+            if self._phone_dialog is not None:
+                self._phone_dialog.reject()
+            self._cleanup_phone_photo()
             self._settings.setValue('window/geometry', self.saveGeometry())
             self._settings.setValue('window/splitter', self.splitter.saveState())
             self._settings.sync()
@@ -426,6 +433,9 @@ class MainWindow(QMainWindow):
         self.btn_close_file.setToolTip('关闭当前文件，保留软件和参数 (Ctrl+W)')
         self.btn_close_file.clicked.connect(self._close_file)
         file_row.addWidget(self.lbl_file, 1)
+        self.btn_phone_import = QPushButton('手机扫码导入…')
+        self.btn_phone_import.clicked.connect(self._open_phone_import)
+        file_row.addWidget(self.btn_phone_import)
         file_row.addWidget(self.btn_close_file)
         left_col_layout.addLayout(file_row)
 
@@ -631,6 +641,10 @@ class MainWindow(QMainWindow):
         act_open.triggered.connect(self._open_file)
         menu_file.addAction(act_open)
 
+        self.act_phone_import = QAction('手机扫码导入…', self)
+        self.act_phone_import.triggered.connect(self._open_phone_import)
+        menu_file.addAction(self.act_phone_import)
+
         self.act_close_file = QAction('关闭当前文件', self)
         self.act_close_file.setShortcut('Ctrl+W')
         self.act_close_file.triggered.connect(self._close_file)
@@ -643,12 +657,36 @@ class MainWindow(QMainWindow):
 
     # ---------- 打开文件: PDF 或图片 ----------
 
+    def _open_phone_import(self):
+        if self._phone_dialog is None:
+            dialog = PhoneImportDialog(self)
+            self._phone_dialog = dialog
+            dialog.finished.connect(lambda: setattr(self, '_phone_dialog', None))
+            dialog.finished.connect(dialog.deleteLater)
+        self._phone_dialog.show()
+        self._phone_dialog.raise_()
+        self._phone_dialog.activateWindow()
+
+    def _cleanup_phone_photo(self):
+        if self._phone_photo is not None:
+            self._phone_photo.cleanup()
+            self._phone_photo = None
+
+    def _accept_phone_photo(self, photo):
+        try:
+            self._load_page_image(photo.image, str(photo.path))
+        except Exception as error:
+            QMessageBox.warning(self, '加载失败', str(error))
+            return False
+        self._phone_photo = photo
+        return True
+
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, '选择签名扫描件', '',
-            '所有支持 (*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff);;'
+            '所有支持 (*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff *.heic *.heif);;'
             'PDF 文件 (*.pdf);;'
-            '图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)')
+            '图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.heic *.heif)')
         if not path:
             return
         self._load_path(path)
@@ -658,28 +696,27 @@ class MainWindow(QMainWindow):
             if path.lower().endswith('.pdf'):
                 page_img = load_pdf_page(path, dpi=300)
             else:
-                with Image.open(path) as original:
-                    oriented = ImageOps.exif_transpose(original)
-                    # 透明 PNG 的透明区按白纸处理, 避免透明黑色像素被当成墨迹。
-                    rgba = oriented.convert('RGBA')
-                    page_img = Image.new('RGB', rgba.size, 'white')
-                    page_img.paste(rgba, mask=rgba.getchannel('A'))
+                page_img, _ = load_image(path)
+            self._load_page_image(page_img, path)
         except Exception as e:
             QMessageBox.critical(self, '加载失败', str(e))
             return
 
+    def _load_page_image(self, page_img, path):
+        # 所有可能失败的图像计算先完成，成功后才替换当前文档。
+        gray = np.asarray(page_img.convert('L')).astype(np.float32)
+        if detect_signature_orientation(gray):
+            page_img = page_img.rotate(90, expand=True)
+            gray = np.asarray(page_img.convert('L')).astype(np.float32)
+        bbox = detect_ink_bbox(gray, padding=self._params.bbox_padding)
+        watermark = render_watermark(page_img.crop(bbox), self._params)
+        pm = self._pil_to_qpixmap(page_img)
         self._preview_timer.stop()
+        self._cleanup_phone_photo()
         self._page_img = page_img
         self._source_path = os.path.abspath(path)
         self._wm_image = None
 
-        # 自动方向检测: 竖排签名旋转 90° 变横排 (rotate(90)=逆时针)
-        gray = np.asarray(self._page_img.convert('L')).astype(np.float32)
-        if detect_signature_orientation(gray):
-            self._page_img = self._page_img.rotate(90, expand=True)
-            self.statusBar().showMessage('检测到竖排签名, 已自动旋转 90° (如方向反了用右侧按钮翻转)')
-
-        pm = self._pil_to_qpixmap(self._page_img)
         self._crop_item = None
         self._pix_item = None
         self.scene.clear()
@@ -691,7 +728,14 @@ class MainWindow(QMainWindow):
             self._pix_item.sceneBoundingRect(), QPen(QColor(90, 90, 90), 0))
         self.scene.setSceneRect(self._pix_item.sceneBoundingRect())
 
-        self._auto_detect_bbox()
+        bounds = self._pix_item.sceneBoundingRect()
+        x0, y0, x1, y1 = bbox
+        rect = QRectF(x0, y0, x1 - x0, y1 - y0).intersected(bounds)
+        self._crop_item = CropRectItem(rect, bounds, rect_cb=self._on_crop_changed)
+        self.scene.addItem(self._crop_item)
+        self._update_bbox_label()
+        self._wm_image = watermark
+        self._display_preview()
         self.view_page.fitInView(self._pix_item, Qt.AspectRatioMode.KeepAspectRatio)
         self.btn_open.setVisible(False)
         self.lbl_file.setText(os.path.basename(path))
@@ -708,6 +752,7 @@ class MainWindow(QMainWindow):
 
     def _close_file(self):
         self._preview_timer.stop()
+        self._cleanup_phone_photo()
         self._crop_item = None
         self._pix_item = None
         self._page_border = None
@@ -984,7 +1029,11 @@ class MainWindow(QMainWindow):
             wm = self._watermark_for_export()
             if wm is None:
                 return
-            default_path = os.path.join(os.path.dirname(self._source_path),
+            default_dir = os.path.dirname(self._source_path)
+            if self._phone_photo is not None:
+                default_dir = (QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+                               or os.path.expanduser('~'))
+            default_path = os.path.join(default_dir,
                                         os.path.splitext(os.path.basename(self._source_path))[0] + '_签名')
 
             if kind == 'png':

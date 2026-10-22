@@ -11,6 +11,7 @@ __pycache__/
 /build/
 /dist/
 /.verification/
+/test sample/
 
 # 图章备份与临时文件
 SigMarker-backups/

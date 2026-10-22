@@ -8,11 +8,15 @@
 
 - `main.py`：源码及打包启动入口，自检分支在加载 Qt 前执行。
 - `sigmarker/app.py`：PyQt6 界面、文件加载、裁剪交互、预览、剪贴板及导出入口。
+- `sigmarker/image_io.py`：本地和手机图片共用的解码、方向修正、透明区处理及手机格式/像素限制。
+- `sigmarker/phone_import.py`：单次临时 HTTP 收图服务、令牌、上传限制及临时原图所有权，不依赖 Qt。
+- `sigmarker/phone_dialog.py`、`sigmarker/phone_page.py`：Qt 扫码/接收预览和离线内置手机页面；后台仅通过 queued Signal 交付结果。
 - `sigmarker/sigextract.py`：背景校正、墨迹范围检测、方向判断、RGBA 渲染及 PNG/PDF 导出；算法保持独立于界面。
 - `sigmarker/stamp_import.py`：PDF-XChange 图章集合的验证、追加、原文件备份和原子替换。
 - `sigmarker/clipboard_image.py`：带 DPI 的 PNG/CF_DIBV5 编码及 Windows 剪贴板内存所有权管理。
 - `tests/test_sigmarker.py`：合成图像和 Qt 回归测试。
 - `tests/test_stamp_import.py`：图章名称登记、页面与元数据保留、透明度和写入失败保护测试。
+- `tests/test_phone_import.py`：真实回环 HTTP、HEIC 合成样本及 Qt 接收/取消/清理回归；不得绑定用户局域网地址。
 - `sigmarker/package_smoke.py`：成品无界面启动及核心流程自检，由 `--self-test` 参数调用。
 - `build.bat`：供用户运行的打包入口；包含结束暂停。
 - `SigMarker.spec`：PyInstaller 打包配置的唯一来源。
@@ -33,6 +37,9 @@
 - 复制、PNG、PDF 和图章共用输出 DPI，默认 300，界面可调 72～1200 并记忆；显示毫米尺寸，不重采样。Windows 原生 CF_DIBV5 的密度字段需显式写入，Qt 默认转换会置零。剪贴板测试仅检查内存数据和模拟 API，不读写用户系统剪贴板。
 - 图章功能只在用户点击导入时写入所选集合。用户已要求允许运行中尝试，不按 PDF-XChange 进程主动拦截；实际文件锁定或并发变更时停止，保留原文件。保留已有页面、名称登记及元数据；验证通过、保存原文件备份后原子替换。成功仅确认文件已写入，不声称图章面板已刷新。测试使用合成集合或真实集合的本地副本，不改用户正在使用的图章文件。
 - 修改算法时补充或运行相关回归；修改界面时关注拖放、连续打开、关闭文件、裁剪和旋转的相邻行为。
+- 手机扫码服务仅在用户主动开启后监听所选 IPv4 临时端口，令牌有效 10 分钟、每会话一张有效照片，限制 30 MiB/6000 万像素/2 个连接；不自动改防火墙。已有文件先预览确认，关闭、过期、刷新或迟到回调不得覆盖文档或遗留临时原图。临时照片导出默认使用用户图片目录。HTTP 未加密，仅用于可信局域网。
+- HEIC/HEIF 的本地打开、拖入和手机上传共用只读 pi-heif 解码器；保留主图、容器方向和原始像素。合成 HEIC 样本可用 `tests/generate_heic_fixtures.py` 在独立编码环境重建，不把编码器加入运行依赖。
+- 扫码服务使用 IP 直接绑定，启动时不得调用反向 DNS（`getfqdn`/`gethostbyaddr`），避免主线程因局域网 DNS 超时阻塞数秒。
 - 更新文件入口、功能限制或构建方式时，同步相关说明。项目规模较小，按实际需要调整目录，避免无关重构。
 
 ## 运行与验证

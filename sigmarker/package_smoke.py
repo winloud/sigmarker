@@ -10,6 +10,15 @@ import tempfile
 import traceback
 
 
+def qr_matches(image, expected):
+    """双识别器校验；默认 OpenCV 检测器会漏检部分合法的二维码图案。"""
+    import cv2
+    for detector_class in (cv2.QRCodeDetector, getattr(cv2, 'QRCodeDetectorAruco', None)):
+        if detector_class is not None and detector_class().detectAndDecode(image)[0] == expected:
+            return True
+    return False
+
+
 def run(report_path=None):
     report = {'ok': False, 'frozen': bool(getattr(sys, 'frozen', False)), 'checks': []}
     destination = Path(report_path) if report_path else Path(sys.executable).with_name('self-test.json')
@@ -21,17 +30,22 @@ def run(report_path=None):
         import fitz
         import numpy as np
         import pypdf
+        import qrcode
+        import pi_heif
+        import _pi_heif
         from PIL import Image
-        from PyQt6 import QtCore
+        from PyQt6 import QtCore, QtNetwork
         from PyQt6.QtCore import QPointF, QRectF, QSettings
         from PyQt6.QtWidgets import QApplication
         from .app import MainWindow, APP_STYLE
         from .sigextract import export_pdf, export_png
 
-        report['checks'].append('Qt/OpenCV/numpy/Pillow/PDF/pypdf imports')
+        report['checks'].append('Qt/QtNetwork/OpenCV/numpy/Pillow/PDF/pypdf/qrcode/pi-heif imports')
         report['qt_version'] = QtCore.QT_VERSION_STR
         report['module_paths'] = {name: module.__file__ for name, module in (
-            ('QtCore', QtCore), ('cv2', cv2), ('numpy', np), ('Pillow', Image), ('fitz', fitz), ('pypdf', pypdf))}
+            ('QtCore', QtCore), ('QtNetwork', QtNetwork), ('cv2', cv2), ('numpy', np),
+            ('Pillow', Image), ('fitz', fitz), ('pypdf', pypdf), ('qrcode', qrcode),
+            ('pi_heif', pi_heif), ('_pi_heif', _pi_heif))}
         if report['frozen']:
             bundle = Path(sys._MEIPASS).resolve()
             assert all(Path(path).resolve().is_relative_to(bundle)
@@ -161,6 +175,46 @@ def run(report_path=None):
             window._load_path(str(source))
             assert window._wm_image is not None
             report['checks'].append('Close document and reopen')
+
+            # 自检只绑定回环地址，不暴露局域网端口，也不操作系统剪贴板。
+            from http.client import HTTPConnection
+            import time
+            from .image_io import load_image
+            from .phone_dialog import PhoneImportDialog, qr_image
+            fixture = Path(__file__).with_name('assets') / 'synthetic.heic'
+            decoded, actual_format = load_image(fixture, phone=True)
+            assert actual_format == 'HEIF' and decoded.size == (160, 96)
+            assert np.mean(decoded.crop((8, 8, 30, 30))) < 20
+            window._close_file()
+            dialog = PhoneImportDialog(window, address_provider=lambda: [('self-test', '127.0.0.1')])
+            window._phone_dialog = dialog
+            dialog.finished.connect(lambda: setattr(window, '_phone_dialog', None))
+            receiver = dialog.server
+            assert receiver is not None
+            assert qr_matches(np.array(qr_image(receiver.url)), receiver.url)
+            connection = HTTPConnection(*receiver._server.server_address, timeout=5)
+            try:
+                connection.request('POST', '/api/upload', body=fixture.read_bytes(),
+                                   headers={'Authorization': 'Bearer ' + receiver.token})
+                response = connection.getresponse()
+                assert response.status == 200 and json.loads(response.read())['received']
+            finally:
+                connection.close()
+            deadline = time.monotonic() + 5
+            while window._phone_photo is None and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(.01)
+            assert window._phone_photo is not None and window._wm_image is not None
+            received_path = window._phone_photo.path
+            assert received_path.exists()
+            receiver._thread.join(2)
+            deadline = time.monotonic() + 2
+            while receiver._server.fileno() != -1 and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert not receiver._thread.is_alive() and receiver._server.fileno() == -1
+            window._close_file()
+            assert not received_path.exists()
+            report['checks'].append('HEIC native decode, QR roundtrip, loopback upload, queued Qt auto-load, listener shutdown and temporary-file cleanup')
 
         window.resize(760, 740)
         window.show()  # offscreen 平台只建立离屏表面。
