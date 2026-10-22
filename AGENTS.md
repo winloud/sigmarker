@@ -46,12 +46,12 @@ python -m pytest -q tests
 
 pytest 和 PyInstaller 为开发工具，使用相关命令前检查是否已安装。Qt 回归测试使用 `offscreen` 模式。仅修改说明文档时无需重跑应用测试或重新打包；未变更输入的已有验证结果可复用。
 
-## 打包与备份
+## 打包与成品验证
 
 - 用户可运行 `build.bat`。代理在后台执行其相同构建与自检命令，避免交互式 `pause`：先 `python -m PyInstaller --noconfirm --clean SigMarker.spec`，再 `dist/SigMarker/SigMarker.exe --self-test .verification/package-self-test.json`。自检应等待进程退出，确认退出码为 0 且报告 `ok` 为 `true`。
-- 打包前保留现有 `dist/SigMarker/` 整个目录到 `.verification/SigMarker-before-YYYYMMDD/`；名称已存在时增加唯一后缀，不能覆盖旧备份。移动前核实源、目标均在本项目内。
-- 运行中的旧版可能锁住目录；此时不关闭用户进程。改为复制整包并核对备份，使用 PyInstaller 的 `--distpath` 输出到独立目录，成品自检和交付链接必须指向该实际新包。
-- `build.bat` 负责构建及无界面成品自检，旧包备份需另行执行。
+- 项目已接入 GitHub；后续打包不再备份旧便携包，目标目录未被占用时直接重新构建。已有历史备份按需保留，不自动清理。
+- 运行中的旧版可能锁住目录；此时不关闭用户进程。使用 PyInstaller 的 `--distpath` 输出到独立目录，无需复制或备份旧包，成品自检和交付链接必须指向该实际新包。
+- `build.bat` 负责构建及无界面成品自检，不执行旧包备份。
 - 成品为 `dist/SigMarker/SigMarker.exe`，必须与同目录的 `_internal/` 一起分发。
 - 检查成品包含本次界面和算法代码，以及 OpenCV、Qt Windows 平台插件和 PDF 运行依赖，并实际运行成品自检。仅检查文件存在不足以证明 DLL 能加载。保持 spec 的构建 PATH 隔离，避免外部工具的 ICU/UCRT DLL 混入。明确区分后台自检与用户桌面实机验收。
 
@@ -60,3 +60,9 @@ pytest 和 PyInstaller 为开发工具，使用相关命令前检查是否已安
 默认通过后台命令完成开发、测试和打包，不自行启动、置前或操控桌面窗口，不抢占用户键鼠。软件界面由用户自行启动验收；只有用户明确要求桌面操作时才进行。交付时给出可点击的 EXE 路径及必要的使用说明。
 
 允许后台执行 `--self-test`：它强制使用 Qt `offscreen` 平台，不显示桌面窗口、不发送键鼠输入。
+
+## Git 提交约定
+
+- 提交信息遵循 Conventional Commits：`<type>(<scope>): <description>`，`scope` 可省略。
+- 按修改内容使用 `feat`、`fix`、`refactor`、`docs`、`test`、`build`、`ci` 或 `chore`；描述简洁明确，可使用中文。
+- 示例：`fix(ui): 提高深灰预览提示文字对比度`、`docs: 更新打包约定`。
