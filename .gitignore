@@ -1,0 +1,17 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 本地虚拟环境
+/.venv/
+/venv/
+
+# 构建产物与本地验证
+/build/
+/dist/
+/.verification/
+
+# 图章备份与临时文件
+SigMarker-backups/
+.sigmarker-*.tmp
