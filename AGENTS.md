@@ -21,6 +21,7 @@
 - `build.bat`：供用户运行的打包入口；包含结束暂停。
 - `SigMarker.spec`：PyInstaller 打包配置的唯一来源。
 - `README.md`：使用方法、限制及开发命令。
+- `docs/usage.md`、`docs/development.md`：详细使用指南、源码验证与打包说明；README 保持面向使用者的功能与上手入口。
 - `build/`、`dist/`：构建中间文件和便携包，不作为源码修改。
 - `.verification/`：本地验证图片、日志、检查报告和旧包备份；按需读取，不把其全部内容作为项目上下文。
 - `.verification/diagnostics/_diag.py`：历史样本诊断脚本，含本机样本路径，不属于通用测试入口。

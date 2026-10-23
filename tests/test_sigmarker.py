@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl, QRectF, QSettings, QObject, QEvent, QBuffer, QIODevice
-from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QRegion
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QRegion, QFontDatabase, QFont, QImage, QKeyEvent
 from PyQt6.QtWidgets import QApplication, QGraphicsScene, QPushButton, QDialog
 from PyQt6.QtTest import QTest
 
@@ -65,6 +65,21 @@ def test_desk_edge_and_distant_dust_excluded():
     box = detect_ink_bbox(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), padding=8)
     assert 150 < box[0] < 190 and box[2] < 400
     assert box[3] < 235
+
+
+@pytest.mark.parametrize('contrast', [32, 60, 140])
+def test_textured_shadow_paper_does_not_expand_bounds(contrast):
+    _, ink_mask = signature_sample()
+    yy, xx = np.mgrid[:420, :720]
+    paper = 245 - 70 * xx / 720 - 25 * yy / 420
+    gray = paper - ink_mask * contrast
+    gray += np.random.default_rng(37).normal(0, 5, gray.shape)
+    gray = np.clip(gray, 0, 255).astype(np.uint8)
+    x0, y0, x1, y1 = detect_ink_bbox(gray, padding=8)
+    ys, xs = np.nonzero(ink_mask)
+    assert x0 <= xs.min() and x1 > xs.max()
+    assert y0 <= ys.min() and y1 > ys.max()
+    assert x1 - x0 < 240 and y1 - y0 < 110
 
 
 def test_shadow_background_transparent_and_faint_ink_kept():
@@ -167,6 +182,10 @@ def test_png_pdf_keep_alpha_and_same_physical_size(tmp_path, dpi):
 def qt_app():
     app = QApplication.instance() or QApplication([])
     app.setStyle(APP_STYLE)
+    if os.name == 'nt' and not QFontDatabase.families():
+        font_id = QFontDatabase.addApplicationFont('C:/Windows/Fonts/msyh.ttc')
+        assert font_id >= 0
+        app.setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 9))
     return app
 
 
@@ -190,7 +209,7 @@ def test_ink_density_preview_export_persistence_and_reset(qt_app, tmp_path):
         assert np.any(boosted[..., 3] > baseline[..., 3])
         assert np.array_equal(boosted, np.array(window._watermark_for_export()))
         assert boosted[0, 0, 3] == 0
-        assert window.lbl_ink_density_val.text() == '2.00×'
+        assert window.spn_ink_density.value() == 2.0
         assert window.chk_clear_bg.isChecked() and window.sld_opacity.value() == 100
         assert int(window._settings.value('ink_density_x100')) == 200
     finally:
@@ -241,7 +260,7 @@ def test_legacy_disabled_paper_correction_is_migrated(qt_app, tmp_path, legacy_d
     try:
         assert not hasattr(window, 'chk_flatten_bg')
         assert not settings.contains('flatten_bg')
-        assert window.sld_contrast.value() == 50 and window.spn_output_dpi.value() == 600
+        assert window.sld_contrast.value() == 50 and window.cmb_output_dpi.value() == 600
         window._load_path(str(path))
         rgba = np.array(window._watermark_for_export())
         assert rgba[0, 0, 3] == 0 and np.mean(rgba[..., 3] > 0) < .25
@@ -265,7 +284,7 @@ def test_copy_uses_selected_dpi_and_remembers_it(qt_app, tmp_path, monkeypatch):
     signature_sample()[0].save(path)
     window = MainWindow()
     window._load_path(str(path))
-    window.spn_output_dpi.setValue(600)
+    window.cmb_output_dpi.setValue(600)
     window._copy_watermark()
     if os.name == 'nt':
         with Image.open(BytesIO(native_copies[0]['PNG'])) as copied:
@@ -279,7 +298,7 @@ def test_copy_uses_selected_dpi_and_remembers_it(qt_app, tmp_path, monkeypatch):
     window.close()
     restored = MainWindow()
     try:
-        assert restored.spn_output_dpi.value() == 600
+        assert restored.cmb_output_dpi.value() == 600
         assert restored._params.output_dpi == 600
     finally:
         restored.close()
@@ -431,7 +450,7 @@ def test_preview_drop_reload_close_and_center(qt_app, tmp_path):
         assert any(action.shortcut().toString() == 'Ctrl+O' for action in file_actions)
         for size in [(1280, 860), (1000, 800)]:
             window.resize(*size); qt_app.processEvents()
-            delta = window.btn_open.geometry().center() - view.rect().center()
+            delta = window.empty_card.geometry().center() - view.rect().center()
             assert abs(delta.x()) <= 1 and abs(delta.y()) <= 1
         # 在远离打开按钮的视口左上角发送真实 Qt 拖放事件。
         mime = QMimeData(); mime.setUrls([QUrl.fromLocalFile(str(path))])
@@ -477,6 +496,195 @@ def test_rotate_buttons_follow_labels(qt_app):
     window._rotate_page(90)
     assert np.array_equal(np.array(window._page_img), np.array(image.rotate(-90, expand=True)))
     window.close()
+
+
+@pytest.mark.parametrize('degrees', [90, -90, 180, 270, -270])
+def test_rotation_preserves_moved_manual_crop(qt_app, tmp_path, monkeypatch, degrees):
+    path = tmp_path / 'rotate.png'
+    signature_sample()[0].save(path)
+    window = MainWindow()
+    try:
+        window._load_path(str(path))
+        window._crop_item.setRect(QRectF(160, 130, 240, 105))
+        window._crop_item.setPos(11, 7)
+        original = window._page_img.crop(window._crop_pixels())
+        monkeypatch.setattr(window, '_auto_detect_bbox', lambda: pytest.fail('Manual crop was redetected'))
+        window._rotate_page(degrees)
+        actual = window._page_img.crop(window._crop_pixels())
+        assert np.array_equal(np.array(actual), np.array(original.rotate(-degrees, expand=True)))
+        window._rotate_page(-degrees)
+        assert window._crop_pixels() == (171, 137, 411, 242)
+        assert window._crop_item._bounds == window._pix_item.sceneBoundingRect()
+    finally:
+        window.close()
+
+
+def test_output_dpi_presets_custom_and_reset(qt_app):
+    window = MainWindow()
+    window.show()
+    qt_app.setActiveWindow(window)
+    qt_app.processEvents()
+    combo = window.cmb_output_dpi
+    try:
+        for dpi in (150, 300, 600, 1200):
+            combo.showPopup()
+            qt_app.processEvents()
+            index = combo.model().index(combo.findData(dpi), 0)
+            QTest.mouseClick(combo.view().viewport(), Qt.MouseButton.LeftButton,
+                             pos=combo.view().visualRect(index).center())
+            assert window._params.output_dpi == dpi
+            assert combo.value() == dpi and combo.currentText() == str(dpi)
+            assert combo.isEnabled()
+        combo.lineEdit().setFocus()
+        combo.lineEdit().selectAll()
+        QTest.keyClicks(combo.lineEdit(), '437')
+        QTest.keyClick(combo.lineEdit(), Qt.Key.Key_Return)
+        assert window._params.output_dpi == 437
+        # 越界、空白输入在失焦时回到上次有效值，不污染记忆值。
+        for text in ('71', '1201', ''):
+            combo.setEditText(text)
+            window.btn_reset.setFocus()
+            qt_app.processEvents()
+            assert combo.value() == 437 and window._params.output_dpi == 437
+            assert combo.currentText() == '437'
+            combo.lineEdit().setFocus()
+        window._reset_params()
+        assert combo.value() == 300 and combo.isEnabled()
+        combo.setValue(437)
+        restored = MainWindow()
+        try:
+            assert restored._params.output_dpi == 437
+            assert restored.cmb_output_dpi.isEnabled()
+            assert restored.cmb_output_dpi.currentText() == '437'
+        finally:
+            restored.close()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize('name,value', [
+    ('threshold', 166), ('contrast', 1.55), ('ink_density', 2.37),
+    ('opacity', .63), ('sharpness', 1.25),
+])
+def test_parameter_text_input_updates_preview_and_saved_value(qt_app, tmp_path, name, value):
+    source = tmp_path / 'numeric.png'
+    signature_sample()[0].save(source)
+    window = MainWindow()
+    window.show()
+    window._load_path(str(source))
+    try:
+        editor = getattr(window, 'spn_' + name)
+        editor.setFocus()
+        editor.selectAll()
+        QTest.keyClicks(editor, str(value))
+        QTest.keyClick(editor, Qt.Key.Key_Return)
+        QTest.qWait(100)
+        assert getattr(window._params, name) == pytest.approx(value)
+        expected = render_watermark(window._page_img.crop(window._crop_pixels()), window._params)
+        assert np.array_equal(np.array(window._wm_image), np.array(expected))
+        restored = MainWindow()
+        try:
+            assert getattr(restored, 'spn_' + name).value() == pytest.approx(value)
+            restored._reset_params()
+            assert getattr(restored, 'spn_' + name).value() == getattr(WatermarkParams(), name)
+        finally:
+            restored.close()
+    finally:
+        window.close()
+
+
+def test_paste_shortcut_imports_alpha_image_and_uses_pictures_directory(qt_app, tmp_path, monkeypatch):
+    _, mask = signature_sample()
+    rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = (12, 34, 56)
+    rgba[..., 3] = mask.astype(np.uint8) * 255
+    data = BytesIO()
+    Image.fromarray(rgba).save(data, format='PNG')
+    mime = QMimeData()
+    mime.setImageData(QImage.fromData(data.getvalue(), 'PNG'))
+    clipboard = type('FakeClipboard', (), {'mimeData': lambda self: mime})()
+    monkeypatch.setattr(QApplication, 'clipboard', lambda: clipboard)
+    window = MainWindow()
+    window.show()
+    qt_app.setActiveWindow(window)
+    window.view_page.setFocus()
+    qt_app.processEvents()
+    try:
+        QTest.keyClick(window.view_page, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+        assert window._page_img is not None and window._page_img.size == (720, 420)
+        assert window._page_img.getpixel((0, 0)) == (255, 255, 255)
+        assert window._source_path == '' and window.lbl_file.text() == '剪贴板图片'
+        assert window._wm_image.getchannel('A').getbbox()
+        assert window.empty_card.isHidden()
+        defaults = []
+        monkeypatch.setattr('sigmarker.app.QFileDialog.getSaveFileName',
+                            lambda *args: (defaults.append(args[2]) or '', ''))
+        monkeypatch.setattr('sigmarker.app.QStandardPaths.writableLocation', lambda *_: str(tmp_path))
+        window._export('png')
+        assert defaults == [str(tmp_path / '剪贴板图片_签名.png')]
+        # 数值输入框保留标准粘贴快捷键，不抢占文字编辑。
+        for editor in (window.spn_threshold.lineEdit(), window.cmb_output_dpi.lineEdit()):
+            event = QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+            event.setAccepted(False)
+            QApplication.sendEvent(editor, event)
+            assert event.isAccepted()
+        window._close_file()
+        assert window.empty_card.isVisible() and not window._source_name
+    finally:
+        window.close()
+
+
+def test_paste_file_invalid_content_and_failed_decode_preserve_document(qt_app, tmp_path, monkeypatch):
+    source = tmp_path / 'copied.png'
+    signature_sample()[0].save(source)
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    clipboard = type('FakeClipboard', (), {'mimeData': lambda self: mime})()
+    monkeypatch.setattr(QApplication, 'clipboard', lambda: clipboard)
+    window = MainWindow()
+    try:
+        window.act_paste.trigger()
+        assert window._source_path == str(source.resolve())
+        original = window._page_img
+        mime.clear()
+        mime.setText('plain text')
+        window.act_paste.trigger()
+        assert window._page_img is original
+        mime.setImageData(QImage(20, 20, QImage.Format.Format_RGB32))
+        warnings = []
+        monkeypatch.setattr('sigmarker.app.QMessageBox.warning', lambda *args: warnings.append(args))
+        monkeypatch.setattr('sigmarker.app.load_image', lambda *_: (_ for _ in ()).throw(ValueError('synthetic error')))
+        window.act_paste.trigger()
+        assert warnings and window._page_img is original
+        assert window.lbl_file.text() == source.name
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize('size', [(900, 640), (1180, 780)])
+def test_canvas_and_parameter_layout_remain_usable(qt_app, size):
+    window = MainWindow()
+    window.resize(*size)
+    window.show()
+    qt_app.processEvents()
+    try:
+        view = window.view_page.viewport()
+        assert view.rect().contains(window.empty_card.geometry())
+        assert view.rect().contains(window.canvas_toolbar.geometry())
+        assert window.btn_open.parentWidget() is window.btn_phone_import.parentWidget()
+        sliders = [getattr(window, 'sld_' + name)
+                   for name in ('threshold', 'contrast', 'ink_density', 'opacity', 'sharpness')]
+        assert len({slider.width() for slider in sliders}) == 1
+        assert len({slider.x() for slider in sliders}) == 1
+        assert window.btn_export_png.y() == window.btn_export_pdf.y()
+        assert abs(window.btn_export_png.width() - window.btn_export_pdf.width()) <= 1
+        assert window.btn_add_stamp.width() == window.btn_copy.width()
+        assert not window.windowIcon().isNull()
+        assert window.lbl_file.x() < 160
+        assert all(button.parentWidget() is window.canvas_toolbar for button in
+                   (window.btn_rot_ccw, window.btn_rot_cw, window.btn_auto, window.btn_close_file))
+    finally:
+        window.close()
 
 
 def test_stamp_import_does_not_require_editor_exit(qt_app, tmp_path, monkeypatch):

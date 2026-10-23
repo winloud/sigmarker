@@ -101,8 +101,14 @@ def _signature_mask(gray: np.ndarray, dark_threshold: int = 150) -> np.ndarray:
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     keep = np.zeros(count, dtype=np.uint8)
     min_area = max(3, int(h * w * 0.000003))
+    # 弱阈值保留抗锯齿边缘, 但候选连通域必须有足够的可信墨迹。
+    # 纸纹/压缩噪声经膨胀可连成覆盖半页的大组, 应在分组前排除。
+    core_cutoff = cutoff + max(6.0, 3 * mad)
+    core_counts = np.bincount(labels[strength >= core_cutoff], minlength=count)
     for i, (x, y, bw, bh, area) in enumerate(stats[1:], 1):
         if area < min_area:
+            continue
+        if core_counts[i] < max(2, area * .10):
             continue
         density = area / (bw * bh)
         touches = x <= 1 or y <= 1 or x + bw >= w - 1 or y + bh >= h - 1

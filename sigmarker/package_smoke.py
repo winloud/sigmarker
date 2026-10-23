@@ -62,7 +62,15 @@ def run(report_path=None):
         window = MainWindow(settings=settings)
         app.processEvents()
         assert not settings.contains('flatten_bg') and not hasattr(window, 'chk_flatten_bg')
+        assert not window.windowIcon().isNull()
+        assert window.btn_auto.parentWidget() is window.canvas_toolbar
+        assert window.btn_open.parentWidget() is window.btn_phone_import.parentWidget()
+        for button in (window.btn_rot_ccw, window.btn_rot_cw, window.btn_auto,
+                       window.btn_close_file, window.btn_open, window.btn_phone_import):
+            assert not button.icon().pixmap(32, 32).isNull(), button.text()
         report['checks'].append('Offscreen application and main window construction')
+        report['checks'].append('Bundled S icon, canvas toolbar and grouped import actions')
+        report['checks'].append('Toolbar and import vector icons rendered through the SVG plugin')
 
         with tempfile.TemporaryDirectory(prefix='sigmarker-smoke-') as folder:
             work = Path(folder)
@@ -95,7 +103,7 @@ def run(report_path=None):
             Image.fromarray(tones).save(density_source)
             window._load_path(str(density_source))
             baseline_alpha = np.array(window._wm_image)[..., 3]
-            window.sld_ink_density.setValue(200)
+            window.spn_ink_density.setValue(2.0)
             window._refresh_preview()
             boosted_alpha = np.array(window._wm_image)[..., 3]
             assert np.any(boosted_alpha > baseline_alpha) and boosted_alpha[0, 0] == 0
@@ -124,7 +132,8 @@ def run(report_path=None):
             watermark = window._watermark_for_export()
             assert watermark is not None and watermark.getchannel('A').getbbox()
             dpi = 600
-            window.spn_output_dpi.setValue(dpi)
+            window.cmb_output_dpi.activated.emit(window.cmb_output_dpi.findData(dpi))
+            assert window.cmb_output_dpi.currentText() == str(dpi)
             window._refresh_preview()
             assert '600 DPI' in window.lbl_wm_info.text() and 'mm' in window.lbl_wm_info.text()
             from .clipboard_image import clipboard_payloads, _win32_libraries
@@ -225,7 +234,7 @@ def run(report_path=None):
         window.show()
         app.processEvents()
         assert window.size() == expected_size
-        assert window.spn_output_dpi.value() == 600 and window._params.output_dpi == 600
+        assert window.cmb_output_dpi.value() == 600 and window._params.output_dpi == 600
         assert window.sld_ink_density.value() == 200 and window._params.ink_density == 2.0
         report['checks'].append('Window size, output DPI and ink density persisted with isolated test settings')
 

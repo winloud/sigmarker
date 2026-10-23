@@ -9,20 +9,23 @@ import os
 import sys
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QSettings, QTimer, QEvent, pyqtSignal, QMimeData, QStandardPaths
+from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSettings, QTimer, QEvent, pyqtSignal, QMimeData, QStandardPaths, QUrl, QBuffer, QIODevice, QSignalBlocker
 from PyQt6.QtGui import (
-    QAction, QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPainterPath,
+    QAction, QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPainterPath, QDesktopServices,
+    QIcon, QIntValidator, QKeySequence, QFont, QPalette,
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QSlider, QCheckBox, QComboBox, QGroupBox,
+    QLabel, QPushButton, QSlider, QCheckBox, QComboBox,
     QFileDialog, QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsRectItem, QGraphicsPixmapItem, QStatusBar, QSizePolicy,
     QSplitter, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QSpinBox,
+    QDoubleSpinBox, QAbstractSpinBox, QGridLayout, QFrame, QToolButton,
 )
 
 from .sigextract import (
@@ -43,6 +46,62 @@ from .phone_dialog import PhoneImportDialog
 # 支持拖入/打开的扩展名
 _SUPPORTED_EXTS = ('.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.heic', '.heif')
 APP_STYLE = 'windows11'
+APP_FONT_FAMILY = 'Microsoft YaHei'
+REPOSITORY_URL = 'https://github.com/winloud/sigmarker'
+APP_ICON = Path(__file__).with_name('assets') / 'sigmarker.ico'
+
+
+class OutputDpiComboBox(QComboBox):
+    """预设和手动输入共用一个有效 DPI，未提交的输入不影响导出。"""
+
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, value=DEFAULT_OUTPUT_DPI):
+        super().__init__()
+        self._value = DEFAULT_OUTPUT_DPI
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for dpi in (100, 150, 200, 300, 600, 1200):
+            self.addItem(f'{dpi} DPI' + ('（推荐）' if dpi == 300 else ''), dpi)
+        self.lineEdit().setValidator(QIntValidator(72, 1200, self))
+        self.lineEdit().installEventFilter(self)
+        self.lineEdit().editingFinished.connect(self._commit_text)
+        self.activated.connect(self._activate_preset)
+        self.setToolTip('可下拉选择或直接输入 72～1200。DPI 越大，物理尺寸越小；像素和清晰度不变。')
+        self.setValue(value)
+
+    def value(self):
+        return self._value
+
+    def _activate_preset(self, index):
+        value = self.itemData(index)
+        if value is not None:
+            self.setValue(value)
+
+    def setValue(self, value):
+        value = max(72, min(1200, int(value)))
+        changed = value != self._value
+        self._value = value
+        with QSignalBlocker(self):
+            self.setCurrentIndex(self.findData(value))
+            self.setEditText(str(value))
+        if changed:
+            self.valueChanged.emit(value)
+
+    def _commit_text(self):
+        text = self.currentText().strip()
+        value = int(text) if text.isascii() and text.isdecimal() else self._value
+        self.setValue(value if 72 <= value <= 1200 else self._value)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.FocusOut and event.reason() != Qt.FocusReason.PopupFocusReason:
+            self._commit_text()
+        return super().eventFilter(watched, event)
+
+    def focusOutEvent(self, event):
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self._commit_text()
+        super().focusOutEvent(event)
 
 
 # ---------- 裁剪框: 单 item, 手绘手柄, 手动事件, 全程边界钳制 ----------
@@ -274,6 +333,19 @@ class ZoomableGraphicsView(QGraphicsView):
         self.scale(factor, factor)
 
 
+class ImportCard(QFrame):
+    """透明导入面板；手绘等距虚线，避免样式表边框在圆角处挤成点。"""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor('#55585e'), 1)
+        pen.setDashPattern([3, 3])
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 6, 6)
+
+
 # ---------- 主窗口 ----------
 
 class MainWindow(QMainWindow):
@@ -281,12 +353,27 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings if settings is not None else QSettings('SigMarker', 'SigMarker')
         self.setWindowTitle('SigMarker — 签名水印提取')
-        self.resize(1280, 860)
+        self.setFont(QFont(APP_FONT_FAMILY, 9))
+        self.setWindowIcon(QIcon(str(APP_ICON)))
+        # 原型使用统一的白色工作区；明确调色板，避免系统 Window/Base 色混成分区色块。
+        palette = self.palette()
+        for role, color in (
+                (QPalette.ColorRole.Window, '#ffffff'),
+                (QPalette.ColorRole.Base, '#ffffff'),
+                (QPalette.ColorRole.Button, '#ffffff'),
+                (QPalette.ColorRole.WindowText, '#20242a'),
+                (QPalette.ColorRole.Text, '#20242a'),
+                (QPalette.ColorRole.ButtonText, '#20242a')):
+            palette.setColor(role, QColor(color))
+        self.setPalette(palette)
+        self.resize(1180, 780)
+        self.setMinimumSize(900, 640)
 
         self._page_img: Image.Image | None = None
         self._pix_item: QGraphicsPixmapItem | None = None
         self._crop_item: CropRectItem | None = None
         self._source_path = ''
+        self._source_name = ''
         self._phone_photo = None
         self._phone_dialog = None
         self._wm_image = None
@@ -299,20 +386,19 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_actions()
         self.setStatusBar(QStatusBar())
+        self.statusBar().setStyleSheet('''
+            QStatusBar { background: #ffffff; border-top: 1px solid #e0e4e9; }
+            QStatusBar::item { border: none; }
+        ''')
 
         # 拖放打开
         self.setAcceptDrops(True)
-        # 未打开文件时的居中"打开"按钮 (叠在预览区上)
-        self.btn_open = QPushButton('打开 PDF 或图片…\n也可拖入整个文档预览区', self.view_page.viewport())
-        self.btn_open.setFixedSize(220, 60)
-        self.btn_open.clicked.connect(self._open_file)
-        self.btn_open.setVisible(self._page_img is None)
-        self.view_page.viewportResized.connect(self._position_open_btn)
+        self.view_page.viewportResized.connect(self._position_canvas_overlays)
         self.view_page.fileDropped.connect(self._load_path)
         self._set_document_enabled(False)
         self._restore_window_layout()
-        self._position_open_btn()
-        QTimer.singleShot(0, self._position_open_btn)
+        self._position_canvas_overlays()
+        QTimer.singleShot(0, self._position_canvas_overlays)
 
     def _restore_window_layout(self):
         geometry = self._settings.value('window/geometry')
@@ -385,261 +471,426 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._position_open_btn()
+        self._position_canvas_overlays()
 
-    def _position_open_btn(self):
-        if not hasattr(self, 'btn_open'):
+    def _position_canvas_overlays(self):
+        if not hasattr(self, 'empty_card'):
             return
-        vw = self.view_page.viewport().width()
-        vh = self.view_page.viewport().height()
-        self.btn_open.move(max((vw - self.btn_open.width()) // 2, 0),
-                           max((vh - self.btn_open.height()) // 2, 0))
+        viewport = self.view_page.viewport()
+        self.empty_card.adjustSize()
+        self.empty_card.move(max((viewport.width() - self.empty_card.width()) // 2, 0),
+                             max((viewport.height() - self.empty_card.height()) // 2, 0))
+        self.canvas_toolbar.adjustSize()
+        self.canvas_toolbar.move(max(viewport.width() - self.canvas_toolbar.width() - 10, 0), 10)
+        self.canvas_toolbar.raise_()
 
     # ---------- UI ----------
 
     def _build_ui(self):
         central = QWidget()
+        central.setObjectName('mainSurface')
         self.setCentralWidget(central)
-        # 只弱化分区容器边框，保留原生控件及裁剪框的交互提示。
-        central.setStyleSheet('''
-            QGroupBox {
-                border: 1px solid #d5d9df;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 8px;
+        central.setStyleSheet("""
+            QWidget#mainSurface { background: #ffffff; }
+            QPushButton {
+                background: #ffffff; color: #20242a;
+                border: 1px solid #cbd1da; border-radius: 4px; padding: 5px 10px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 12px;
-                padding: 0 4px;
+            QPushButton:hover { background: #f3f6fa; border-color: #b2bfce; }
+            QPushButton:pressed { background: #e7edf5; }
+            QPushButton:disabled { background: #f7f8fa; color: #9aa3af; border-color: #e1e5eb; }
+            QSpinBox, QDoubleSpinBox, QComboBox {
+                background: palette(base); color: palette(text);
+                border: 1px solid #cbd1da; border-radius: 4px; padding: 4px 6px;
             }
-        ''')
-
+            QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: #0078d4; }
+            QComboBox { padding-right: 24px; }
+            QComboBox::drop-down { width: 22px; border: none; }
+            QSlider::groove:horizontal { height: 4px; background: #cbd1da; border-radius: 2px; }
+            QSlider::sub-page:horizontal { background: #0078d4; border-radius: 2px; }
+            QSlider::handle:horizontal {
+                width: 12px; height: 12px; margin: -5px 0;
+                background: palette(base); border: 2px solid #0078d4; border-radius: 7px;
+            }
+            QSlider::handle:horizontal:hover { background: #dcefff; }
+            QFrame#parameterPanel {
+                background: #ffffff; border: none;
+                border-left: 1px solid #e0e4e9; border-radius: 0;
+            }
+            QSplitter::handle { background: #ffffff; }
+            QLabel#sectionTitle { font-weight: bold; }
+            QLabel#sectionHint { color: #687483; }
+            QLabel#fileBadge {
+                background: rgba(128, 128, 128, 16); border-radius: 3px; padding: 3px 7px;
+            }
+            QPushButton#primaryAction {
+                background: #0078d4; color: white; border: 1px solid #0078d4;
+                border-radius: 4px; padding: 7px 12px;
+            }
+            QPushButton#primaryAction:hover { background: #106ebe; }
+            QPushButton#primaryAction:pressed { background: #005a9e; }
+            QPushButton#primaryAction:disabled {
+                background: #edf1f6; color: #9aa3af; border-color: #e1e5eb;
+            }
+        """)
+        # 显式箭头避免原生样式在离屏表面或不同系统主题下漏绘。
+        arrow_path = (APP_ICON.parent / 'chevron-down.svg').as_posix()
+        central.setStyleSheet(central.styleSheet() +
+            f'QComboBox::down-arrow {{ image: url("{arrow_path}"); width: 12px; height: 12px; }}')
         main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 8, 10, 8)
+        main_layout.setSpacing(12)
 
-        # === 左栏: 上下堆叠 ===
         left_col = QWidget()
-        left_col_layout = QVBoxLayout(left_col)
-        left_col_layout.setContentsMargins(0, 0, 0, 0)
-        left_col_layout.setSpacing(8)
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        file_row = QHBoxLayout()
-        self.lbl_file = QLabel('未打开文件 · 拖入 PDF / 图片开始')
+        top_box = QWidget()
+        top_layout = QVBoxLayout(top_box)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+        file_header, file_row = self._section_header('原图画布')
+        self.lbl_file = QLabel('未载入文件')
+        self.lbl_file.setObjectName('fileBadge')
         self.lbl_file.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.btn_close_file = QPushButton('关闭文件')
-        self.btn_close_file.setToolTip('关闭当前文件，保留软件和参数 (Ctrl+W)')
-        self.btn_close_file.clicked.connect(self._close_file)
-        file_row.addWidget(self.lbl_file, 1)
-        self.btn_phone_import = QPushButton('手机扫码导入…')
-        self.btn_phone_import.clicked.connect(self._open_phone_import)
-        file_row.addWidget(self.btn_phone_import)
-        file_row.addWidget(self.btn_close_file)
-        left_col_layout.addLayout(file_row)
+        self.lbl_file.setMaximumWidth(self.lbl_file.fontMetrics().horizontalAdvance(self.lbl_file.text()) + 18)
+        file_row.addWidget(self.lbl_file, 1, Qt.AlignmentFlag.AlignVCenter)
+        file_row.addStretch(1)
+        top_layout.addWidget(file_header)
 
-        # 左上: 文档预览 + 裁剪框
         self.scene = QGraphicsScene()
         self.view_page = ZoomableGraphicsView(self.scene)
-        self.view_page.setStyleSheet('QGraphicsView { border: 1px solid #d5d9df; }')
-        # 灰色底衬, 让白纸页面有清晰边界
-        self.view_page.setBackgroundBrush(QBrush(QColor(176, 176, 176)))
-        self.view_page.setMinimumHeight(300)
-        self.view_page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        top_box = QGroupBox('文档预览 (滚轮缩放, 拖边框/手柄调整裁剪区)')
-        top_layout = QVBoxLayout(top_box)
-        top_layout.addWidget(self.view_page)
+        self.view_page.setStyleSheet('QGraphicsView { border: 1px solid #48515e; border-radius: 5px; }')
+        self.view_page.setBackgroundBrush(QBrush(QColor('#222428')))
+        self.view_page.setMinimumHeight(250)
+        self.view_page.setToolTip('滚轮缩放；拖动裁剪框或手柄调整范围。支持拖入文件和 Ctrl+V 粘贴。')
+        top_layout.addWidget(self.view_page, 1)
 
-        # 两个底色使用同一份水印和相同缩放, 可以直接比较透明边缘及白纸效果。
-        bottom_box = QGroupBox('水印预览 · 深灰 / 白底对照')
+        # 浮动控件属于视口，不写入场景或导出图像，也不随缩放滚动。
+        viewport = self.view_page.viewport()
+        self.canvas_toolbar = QFrame(viewport)
+        self.canvas_toolbar.setObjectName('canvasToolbar')
+        self.canvas_toolbar.setStyleSheet("""
+            QFrame#canvasToolbar {
+                background: #ffffff; border: 1px solid #d5d9df; border-radius: 5px;
+            }
+            QToolButton {
+                background: transparent; color: #343e4a;
+                border: none; padding: 5px 7px; border-radius: 3px;
+            }
+            QToolButton:hover { background: #eef3f9; }
+            QToolButton:pressed { background: #e2ebf6; }
+            QToolButton:disabled { background: transparent; color: #9aa3af; }
+            QFrame#toolbarSeparator { background: #e0e4e9; border: none; }
+        """)
+        tools = QHBoxLayout(self.canvas_toolbar)
+        tools.setContentsMargins(3, 3, 3, 3)
+        tools.setSpacing(2)
+        self.btn_rot_ccw = QToolButton()
+        self.btn_rot_ccw.setText('90°')
+        self.btn_rot_ccw.setToolTip('逆时针旋转 90°，保留当前裁剪范围')
+        self.btn_rot_ccw.clicked.connect(lambda: self._rotate_page(-90))
+        self.btn_rot_cw = QToolButton()
+        self.btn_rot_cw.setText('90°')
+        self.btn_rot_cw.setToolTip('顺时针旋转 90°，保留当前裁剪范围')
+        self.btn_rot_cw.clicked.connect(lambda: self._rotate_page(90))
+        self.btn_auto = QToolButton()
+        self.btn_auto.setText('自动框选范围')
+        self.btn_auto.setToolTip('重新检测墨迹范围；姓名、日期和正文需自行区分。')
+        self.btn_auto.clicked.connect(self._auto_detect_bbox)
+        self.btn_close_file = QToolButton()
+        self.btn_close_file.setText('关闭文件')
+        self.btn_close_file.setToolTip('关闭当前文件，保留软件和参数 (Ctrl+W)')
+        self.btn_close_file.clicked.connect(self._close_file)
+        for button, icon in ((self.btn_rot_ccw, 'rotate-ccw'), (self.btn_rot_cw, 'rotate-cw'),
+                             (self.btn_auto, 'auto-crop'), (self.btn_close_file, 'close')):
+            button.setIcon(QIcon(str(APP_ICON.with_name(icon + '.svg'))))
+            button.setIconSize(QSize(15, 15))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        for button in (self.btn_rot_ccw, self.btn_rot_cw, self.btn_auto):
+            tools.addWidget(button)
+        separator = QFrame()
+        separator.setObjectName('toolbarSeparator')
+        separator.setFixedSize(1, 16)
+        tools.addWidget(separator)
+        tools.addWidget(self.btn_close_file)
+
+        self.empty_card = ImportCard(viewport)
+        self.empty_card.setFixedWidth(388)
+        self.empty_card.setObjectName('emptyCard')
+        self.empty_card.setStyleSheet("""
+            QFrame#emptyCard {
+                background: transparent; border: none;
+            }
+            QLabel { background: transparent; color: #e2e7ee; }
+            QLabel#pasteHint { color: #aeb8c5; }
+            QPushButton {
+                background: #ffffff; color: #20242a; border: 1px solid #d4d9e0;
+                border-radius: 4px; padding: 5px 10px;
+            }
+            QPushButton:hover { background: #f2f7fd; border-color: #91b4d9; }
+            QPushButton:pressed { background: #e3eefb; border-color: #6e9fce; }
+            QPushButton:focus { border-color: #0078d4; }
+        """)
+        empty_layout = QVBoxLayout(self.empty_card)
+        empty_layout.setContentsMargins(22, 20, 22, 20)
+        empty_layout.setSpacing(12)
+        empty_title = QLabel('拖拽 PDF 或图片至此处')
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_title)
+        import_row = QHBoxLayout()
+        import_row.setSpacing(10)
+        self.btn_open = QPushButton('打开 PDF / 图片…')
+        self.btn_open.setMinimumHeight(32)
+        self.btn_open.clicked.connect(self._open_file)
+        self.btn_phone_import = QPushButton('手机扫码导入…')
+        self.btn_phone_import.setMinimumHeight(32)
+        self.btn_phone_import.clicked.connect(self._open_phone_import)
+        for button, icon in ((self.btn_open, 'folder'), (self.btn_phone_import, 'phone')):
+            button.setIcon(QIcon(str(APP_ICON.with_name(icon + '.svg'))))
+            button.setIconSize(QSize(16, 16))
+        import_row.addWidget(self.btn_open, 1)
+        import_row.addWidget(self.btn_phone_import, 1)
+        empty_layout.addLayout(import_row)
+        paste_hint = QLabel('支持从剪贴板 Ctrl+V 粘贴图片或文件')
+        paste_hint.setObjectName('pasteHint')
+        paste_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(paste_hint)
+
+        bottom_box = QWidget()
         bottom_layout = QVBoxLayout(bottom_box)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(6)
+        preview_header, preview_header_layout = self._section_header('效果实时预览')
+        preview_hint = QLabel('透明通道验证')
+        preview_hint.setObjectName('sectionHint')
+        preview_header_layout.addWidget(preview_hint)
+        preview_header_layout.addStretch(1)
+        bottom_layout.addWidget(preview_header)
         preview_row = QHBoxLayout()
+        preview_row.setSpacing(0)
         preview_labels = []
         for title, color, text_color, border_color in [
-                ('深灰 · 检查白边', '#30353e', '#e2e7ee', '#48515e'),
-                ('白底 · 盖章效果', '#ffffff', '#596573', '#d5d9df')]:
-            column = QVBoxLayout()
-            heading = QLabel(title)
-            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            column.addWidget(heading)
-            preview = QLabel('请先打开 PDF 或图片')
+                ('暗底 · 检查白边', '#30353e', '#e2e7ee', '#48515e'),
+                ('白底 · 模拟盖章', '#ffffff', '#596573', '#d5d9df')]:
+            preview = QLabel('请先导入图片或 PDF')
             preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            preview.setMinimumHeight(160)
+            preview.setMinimumHeight(150)
             preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
             preview.setStyleSheet(
                 f'border: 1px solid {border_color}; background-color: {color}; color: {text_color};')
-            column.addWidget(preview, 1)
-            preview_row.addLayout(column, 1)
+            # 标注固定在各底板内左上角；图像另留空间，避免覆盖文字。
+            heading = QLabel(title, preview)
+            heading.setObjectName('previewCornerLabel')
+            heading.setStyleSheet(f'background: transparent; border: none; color: {text_color};')
+            heading.move(8, 6)
+            heading.adjustSize()
+            heading.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            preview.setContentsMargins(12, max(30, heading.height() + 14), 12, 12)
+            preview_row.addWidget(preview, 1)
             preview_labels.append(preview)
         self.lbl_wm_dark, self.lbl_wm_white = preview_labels
-        self._preview_labels = tuple(preview_labels)
-        bottom_layout.addLayout(preview_row)
-        self.lbl_wm_info = QLabel('底色仅用于预览，导出仍为透明背景。')
+        self._preview_labels = preview_labels
+        bottom_layout.addLayout(preview_row, 1)
+        self.lbl_wm_info = QLabel('底色仅用于预览，复制和导出保持透明。')
         self.lbl_wm_info.setWordWrap(True)
         bottom_layout.addWidget(self.lbl_wm_info)
-        for preview in self._preview_labels:
+        for preview in preview_labels:
             preview.installEventFilter(self)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(top_box)
         self.splitter.addWidget(bottom_box)
-        self.splitter.setSizes([520, 260])
-        left_col_layout.addWidget(self.splitter, 1)
+        self.splitter.setSizes([470, 230])
+        left_layout.addWidget(self.splitter)
 
-        # === 右栏: 参数 ===
-        right_box = QGroupBox('参数调整')
-        right_box.setFixedWidth(300)
+        right_box = QFrame()
+        right_box.setObjectName('parameterPanel')
+        right_box.setFixedWidth(320)
         right_layout = QVBoxLayout(right_box)
-        right_layout.setSpacing(6)
-
-        self.lbl_bbox = QLabel('裁剪框: —')
+        right_layout.setContentsMargins(12, 0, 0, 0)
+        right_layout.setSpacing(10)
+        parameter_header, parameter_header_layout = self._section_header('参数调整')
+        parameter_header_layout.addStretch(1)
+        self.btn_reset = QPushButton('恢复默认')
+        self.btn_reset.clicked.connect(self._reset_params)
+        parameter_header_layout.addWidget(self.btn_reset)
+        right_layout.addWidget(parameter_header)
+        self.lbl_bbox = QLabel('当前裁剪：暂无选区')
         right_layout.addWidget(self.lbl_bbox)
 
-        right_layout.addWidget(self._mk_label('淡墨保留 (越大保留越多)'))
-        self.sld_threshold = QSlider(Qt.Orientation.Horizontal)
-        self.sld_threshold.setRange(60, 200)
-        self.sld_threshold.setValue(self._params.threshold)
-        self.lbl_threshold_val = QLabel(str(self._params.threshold))
-        self.sld_threshold.valueChanged.connect(self._on_params_changed)
-        self.sld_threshold.valueChanged.connect(
-            lambda v: self.lbl_threshold_val.setText(str(v)))
-        right_layout.addWidget(self._slider_row(self.sld_threshold, self.lbl_threshold_val))
+        # 共用三列网格，数值框等宽，所有原生滑条等长、等粗。
+        parameter_grid = QGridLayout()
+        parameter_grid.setHorizontalSpacing(8)
+        parameter_grid.setVerticalSpacing(10)
+        parameter_grid.setColumnStretch(1, 1)
+        definitions = [
+            ('threshold', '淡墨保留', 60, 200, 1, self._params.threshold,
+             '越大保留越多；细笔画缺失时先调此项，过高可能带入纸纹。'),
+            ('contrast', '对比度', 50, 200, 100, self._params.contrast,
+             '调整已保留的笔迹明暗。'),
+            ('ink_density', '墨迹浓度', 100, 300, 100, self._params.ink_density,
+             '1.00× 保持原效果；加深已提取的笔画，透明背景不变。'),
+            ('opacity', '不透明度', 10, 100, 100, self._params.opacity,
+             '最后应用的整体不透明度。'),
+            ('sharpness', '锐利度', 0, 200, 100, self._params.sharpness,
+             '手机照片偏糊时适度增加，不能恢复原图中不存在的细节。'),
+        ]
+        for row, (name, title, low, high, scale, value, tip) in enumerate(definitions):
+            label = QLabel(title)
+            label.setToolTip(tip)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(low, high)
+            slider.setValue(round(value * scale))
+            slider.setToolTip(tip)
+            slider.setMinimumWidth(90)
+            editor = QSpinBox() if scale == 1 else QDoubleSpinBox()
+            if scale == 1:
+                editor.setRange(low, high)
+            else:
+                editor.setRange(low / scale, high / scale)
+                editor.setDecimals(2)
+                editor.setSingleStep(.01)
+            if name == 'ink_density':
+                editor.setSuffix('×')
+            editor.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            editor.setKeyboardTracking(False)
+            editor.setAlignment(Qt.AlignmentFlag.AlignRight)
+            editor.setFixedSize(68, 30)
+            editor.setValue(value)
+            editor.setToolTip(tip)
+            label.setBuddy(editor)
+            setattr(self, 'sld_' + name, slider)
+            setattr(self, 'spn_' + name, editor)
+            slider.valueChanged.connect(lambda v, e=editor, s=scale: self._sync_parameter_editor(e, v / s))
+            editor.valueChanged.connect(lambda v, s=slider, factor=scale: s.setValue(round(v * factor)))
+            slider.valueChanged.connect(self._on_params_changed)
+            parameter_grid.addWidget(label, row, 0)
+            parameter_grid.addWidget(slider, row, 1)
+            parameter_grid.addWidget(editor, row, 2)
 
-        right_layout.addWidget(self._mk_label('对比度'))
-        self.sld_contrast = QSlider(Qt.Orientation.Horizontal)
-        self.sld_contrast.setRange(50, 200)
-        self.sld_contrast.setValue(int(self._params.contrast * 100))
-        self.lbl_contrast_val = QLabel(f'{self._params.contrast:.2f}')
-        self.sld_contrast.valueChanged.connect(self._on_params_changed)
-        self.sld_contrast.valueChanged.connect(
-            lambda v: self.lbl_contrast_val.setText(f'{v/100:.2f}'))
-        right_layout.addWidget(self._slider_row(self.sld_contrast, self.lbl_contrast_val))
-
-        right_layout.addWidget(self._mk_label('墨迹浓度 (越大越深)'))
-        self.sld_ink_density = QSlider(Qt.Orientation.Horizontal)
-        self.sld_ink_density.setRange(100, 300)
-        self.sld_ink_density.setValue(int(round(self._params.ink_density * 100)))
-        self.sld_ink_density.setToolTip('1.00× 保持原效果；向右加深已提取的笔画，透明背景不变。')
-        self.lbl_ink_density_val = QLabel(f'{self._params.ink_density:.2f}×')
-        self.sld_ink_density.valueChanged.connect(self._on_params_changed)
-        self.sld_ink_density.valueChanged.connect(
-            lambda v: self.lbl_ink_density_val.setText(f'{v/100:.2f}×'))
-        right_layout.addWidget(self._slider_row(self.sld_ink_density, self.lbl_ink_density_val))
-
-        right_layout.addWidget(self._mk_label('不透明度'))
-        self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.sld_opacity.setRange(10, 100)
-        self.sld_opacity.setValue(int(self._params.opacity * 100))
-        self.lbl_opacity_val = QLabel(f'{self._params.opacity:.2f}')
-        self.sld_opacity.valueChanged.connect(self._on_params_changed)
-        self.sld_opacity.valueChanged.connect(
-            lambda v: self.lbl_opacity_val.setText(f'{v/100:.2f}'))
-        right_layout.addWidget(self._slider_row(self.sld_opacity, self.lbl_opacity_val))
-
-        right_layout.addWidget(self._mk_label('锐利度 (手机拍照推荐)'))
-        self.sld_sharpness = QSlider(Qt.Orientation.Horizontal)
-        self.sld_sharpness.setRange(0, 200)
-        self.sld_sharpness.setValue(int(self._params.sharpness * 100))
-        self.lbl_sharpness_val = QLabel(f'{self._params.sharpness:.2f}')
-        self.sld_sharpness.valueChanged.connect(self._on_params_changed)
-        self.sld_sharpness.valueChanged.connect(
-            lambda v: self.lbl_sharpness_val.setText(f'{v/100:.2f}'))
-        right_layout.addWidget(self._slider_row(self.sld_sharpness, self.lbl_sharpness_val))
-
-        right_layout.addWidget(self._mk_label('墨色'))
         self.cmb_color = QComboBox()
-        self.cmb_color.addItems(['黑色 (默认)', '白色', '原彩'])
-        self.cmb_color.setCurrentIndex(
-            {'black': 0, 'white': 1, 'original': 2}.get(self._params.color_mode, 0))
+        self.cmb_color.addItems(['黑色（默认）', '白色', '原彩'])
+        self.cmb_color.setCurrentIndex({'black': 0, 'white': 1, 'original': 2}.get(self._params.color_mode, 0))
         self.cmb_color.currentIndexChanged.connect(self._on_params_changed)
-        right_layout.addWidget(self.cmb_color)
-
+        parameter_grid.addWidget(QLabel('墨色'), 5, 0)
+        parameter_grid.addWidget(self.cmb_color, 5, 1, 1, 2)
+        self.cmb_output_dpi = OutputDpiComboBox(self._params.output_dpi)
+        self.cmb_output_dpi.valueChanged.connect(self._on_params_changed)
+        parameter_grid.addWidget(QLabel('导出 DPI'), 6, 0)
+        parameter_grid.addWidget(self.cmb_output_dpi, 6, 1, 1, 2)
+        right_layout.addLayout(parameter_grid)
         self.chk_clear_bg = QCheckBox('自动清除近白背景')
         self.chk_clear_bg.setChecked(self._params.clear_background)
         self.chk_clear_bg.stateChanged.connect(self._on_params_changed)
         right_layout.addWidget(self.chk_clear_bg)
-
         self.chk_denoise = QCheckBox('清除孤立噪点')
         self.chk_denoise.setChecked(self._params.denoise)
         self.chk_denoise.stateChanged.connect(self._on_params_changed)
         right_layout.addWidget(self.chk_denoise)
-
-        right_layout.addWidget(self._mk_label('粘贴 / 导出 DPI'))
-        self.spn_output_dpi = QSpinBox()
-        self.spn_output_dpi.setRange(72, 1200)
-        self.spn_output_dpi.setSingleStep(50)
-        self.spn_output_dpi.setSuffix(' DPI')
-        self.spn_output_dpi.setValue(self._params.output_dpi)
-        self.spn_output_dpi.setToolTip('DPI 越大，粘贴和导出的物理尺寸越小；像素和清晰度不变。')
-        self.spn_output_dpi.valueChanged.connect(self._on_params_changed)
-        right_layout.addWidget(self.spn_output_dpi)
-
-        btn_reset = QPushButton('恢复默认参数')
-        btn_reset.clicked.connect(self._reset_params)
-        right_layout.addWidget(btn_reset)
-
         right_layout.addStretch(1)
 
-        # 旋转按钮组 (顺时针/逆时针 90°)
-        rot_row = QWidget()
-        rot_lay = QHBoxLayout(rot_row)
-        rot_lay.setContentsMargins(0, 0, 0, 0)
-        self.btn_rot_ccw = QPushButton('↺ 逆时针 90°')
-        self.btn_rot_ccw.clicked.connect(lambda: self._rotate_page(-90))
-        self.btn_rot_cw = QPushButton('↻ 顺时针 90°')
-        self.btn_rot_cw.clicked.connect(lambda: self._rotate_page(90))
-        rot_lay.addWidget(self.btn_rot_ccw)
-        rot_lay.addWidget(self.btn_rot_cw)
-        right_layout.addWidget(rot_row)
-
-        self.btn_auto = QPushButton('自动检测签名范围')
-        self.btn_auto.clicked.connect(self._auto_detect_bbox)
-        right_layout.addWidget(self.btn_auto)
-
         self.btn_copy = QPushButton('复制透明签名')
+        self.btn_copy.setObjectName('primaryAction')
+        self.btn_copy.setMinimumHeight(36)
         self.btn_copy.clicked.connect(self._copy_watermark)
         right_layout.addWidget(self.btn_copy)
-
+        export_row = QHBoxLayout()
+        export_row.setSpacing(6)
         self.btn_export_png = QPushButton('导出透明 PNG')
+        self.btn_export_png.setMinimumHeight(30)
         self.btn_export_png.clicked.connect(lambda: self._export('png'))
-        right_layout.addWidget(self.btn_export_png)
-
         self.btn_export_pdf = QPushButton('导出 PDF')
+        self.btn_export_pdf.setMinimumHeight(30)
         self.btn_export_pdf.clicked.connect(lambda: self._export('pdf'))
-        right_layout.addWidget(self.btn_export_pdf)
-
+        export_row.addWidget(self.btn_export_png, 1)
+        export_row.addWidget(self.btn_export_pdf, 1)
+        right_layout.addLayout(export_row)
         self.btn_add_stamp = QPushButton('添加到 PDF-XChange 图章…')
-        self.btn_add_stamp.setToolTip('将当前签名追加到图章集合并备份；允许运行中尝试导入，面板是否自动更新需实测。')
+        self.btn_add_stamp.setMinimumHeight(30)
+        self.btn_add_stamp.setToolTip('将当前签名追加到图章集合并备份；面板是否自动更新需实测。')
         self.btn_add_stamp.clicked.connect(self._add_stamp)
         right_layout.addWidget(self.btn_add_stamp)
-
-        # === 拼起来 ===
         main_layout.addWidget(left_col, 1)
-        main_layout.addWidget(right_box, 0)
+        main_layout.addWidget(right_box)
 
-    def _mk_label(self, text):
-        l = QLabel(text)
-        l.setStyleSheet('font-weight: bold; margin-top: 6px;')
-        return l
+    @staticmethod
+    def _section_header(title):
+        """分区共用独立标题行，避免混用旧式带标题外框。"""
+        header = QWidget()
+        header.setFixedHeight(30)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        label = QLabel(title)
+        label.setObjectName('sectionTitle')
+        layout.addWidget(label)
+        return header, layout
 
-    def _slider_row(self, slider: QSlider, val_label: QLabel) -> QWidget:
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(slider, 1)
-        lay.addWidget(val_label)
-        return w
+    @staticmethod
+    def _sync_parameter_editor(editor, value):
+        with QSignalBlocker(editor):
+            editor.setValue(round(value) if isinstance(editor, QSpinBox) else value)
 
     # ---------- 菜单栏 ----------
 
     def _build_actions(self):
-        menu_file = self.menuBar().addMenu('文件')
+        menu_bar = self.menuBar()
+        # 参考 Fluent 的轻量菜单：内缩圆角反馈，边界弱于文字。
+        # 半透明中性色叠在系统调色板上，明暗主题共用同一套规则。
+        menu_bar.setStyleSheet('''
+            QMenuBar {
+                background-color: #ffffff;
+                color: #20242a;
+                border-bottom: 1px solid rgba(128, 128, 128, 32);
+                padding: 3px 6px;
+            }
+            QMenuBar::item {
+                background: transparent;
+                padding: 4px 12px;
+                margin: 1px 2px;
+                border-radius: 4px;
+            }
+            QMenuBar::item:selected {
+                background-color: rgba(128, 128, 128, 26);
+            }
+            QMenuBar::item:pressed {
+                background-color: rgba(128, 128, 128, 40);
+            }
+            QMenu {
+                background-color: palette(base);
+                color: palette(text);
+                border: 1px solid rgba(128, 128, 128, 45);
+                border-radius: 8px;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 7px 12px;
+                margin: 1px 0;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: rgba(128, 128, 128, 26);
+            }
+            QMenu::item:disabled { color: palette(mid); }
+            QMenu::separator {
+                height: 1px;
+                background-color: rgba(128, 128, 128, 32);
+                margin: 5px 12px;
+            }
+        ''')
+        menu_file = menu_bar.addMenu('文件')
 
         act_open = QAction('打开…', self)
         act_open.setShortcut('Ctrl+O')
         act_open.triggered.connect(self._open_file)
         menu_file.addAction(act_open)
+
+        self.act_paste = QAction('从剪贴板粘贴图片 / 文件', self)
+        self.act_paste.setShortcut(QKeySequence.StandardKey.Paste)
+        self.act_paste.triggered.connect(self._paste_from_clipboard)
+        menu_file.addAction(self.act_paste)
 
         self.act_phone_import = QAction('手机扫码导入…', self)
         self.act_phone_import.triggered.connect(self._open_phone_import)
@@ -649,13 +900,76 @@ class MainWindow(QMainWindow):
         self.act_close_file.setShortcut('Ctrl+W')
         self.act_close_file.triggered.connect(self._close_file)
         menu_file.addAction(self.act_close_file)
+        menu_file.addSeparator()
 
         act_quit = QAction('退出', self)
         act_quit.setShortcut('Ctrl+Q')
         act_quit.triggered.connect(self.close)
         menu_file.addAction(act_quit)
 
+        menu_about = self.menuBar().addMenu('关于')
+        act_about = QAction('关于 SigMarker…', self)
+        act_about.triggered.connect(self._show_about)
+        menu_about.addAction(act_about)
+        act_repository = QAction('GitHub 仓库', self)
+        act_repository.triggered.connect(self._open_repository)
+        menu_about.addAction(act_repository)
+
+        for menu in (menu_file, menu_about):
+            menu.setMinimumWidth(220)
+            # 系统的矩形投影会露在透明圆角外；只保留样式表绘制的圆角边界。
+            menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint
+                                | Qt.WindowType.NoDropShadowWindowHint)
+            menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def _open_repository(self, *_):
+        if not QDesktopServices.openUrl(QUrl(REPOSITORY_URL)):
+            QMessageBox.warning(self, '无法打开浏览器', f'请在浏览器中打开：\n{REPOSITORY_URL}')
+
+    def _show_about(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('关于 SigMarker')
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+        title = QLabel('<h2>SigMarker</h2>签名水印提取工具')
+        layout.addWidget(title)
+        description = QLabel('从扫描件或手机照片提取手写签名，\n导出透明 PNG / PDF，用于文件水印。')
+        layout.addWidget(description)
+        repository = QLabel(f'GitHub 仓库：<br><a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a>')
+        repository.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        repository.linkActivated.connect(self._open_repository)
+        layout.addWidget(repository)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText('关闭')
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+        dialog.deleteLater()
+
     # ---------- 打开文件: PDF 或图片 ----------
+
+    def _paste_from_clipboard(self):
+        """只在用户主动粘贴时读取；文件沿用解码入口，图片不落地临时原图。"""
+        try:
+            mime = QApplication.clipboard().mimeData()
+            path = ZoomableGraphicsView.dropped_path(mime) if mime is not None else None
+            if path:
+                self._load_path(path)
+                return
+            image = mime.imageData() if mime is not None and mime.hasImage() else None
+            if isinstance(image, QPixmap):
+                image = image.toImage()
+            if not isinstance(image, QImage) or image.isNull():
+                self.statusBar().showMessage('剪贴板中没有可导入的图片或受支持的本地文件。')
+                return
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            if not image.save(buffer, 'PNG'):
+                raise ValueError('无法读取剪贴板图片。')
+            page_img, _ = load_image(BytesIO(bytes(buffer.data())))
+            self._load_page_image(page_img, '', display_name='剪贴板图片')
+        except Exception as error:
+            QMessageBox.warning(self, '粘贴失败', str(error))
 
     def _open_phone_import(self):
         if self._phone_dialog is None:
@@ -702,7 +1016,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, '加载失败', str(e))
             return
 
-    def _load_page_image(self, page_img, path):
+    def _load_page_image(self, page_img, path, *, display_name=None):
         # 所有可能失败的图像计算先完成，成功后才替换当前文档。
         gray = np.asarray(page_img.convert('L')).astype(np.float32)
         if detect_signature_orientation(gray):
@@ -714,7 +1028,8 @@ class MainWindow(QMainWindow):
         self._preview_timer.stop()
         self._cleanup_phone_photo()
         self._page_img = page_img
-        self._source_path = os.path.abspath(path)
+        self._source_path = os.path.abspath(path) if path else ''
+        self._source_name = display_name or os.path.basename(path)
         self._wm_image = None
 
         self._crop_item = None
@@ -737,9 +1052,10 @@ class MainWindow(QMainWindow):
         self._wm_image = watermark
         self._display_preview()
         self.view_page.fitInView(self._pix_item, Qt.AspectRatioMode.KeepAspectRatio)
-        self.btn_open.setVisible(False)
-        self.lbl_file.setText(os.path.basename(path))
-        self.lbl_file.setToolTip(self._source_path)
+        self.empty_card.hide()
+        self.lbl_file.setText(self._source_name)
+        self.lbl_file.setMaximumWidth(self.lbl_file.fontMetrics().horizontalAdvance(self.lbl_file.text()) + 18)
+        self.lbl_file.setToolTip(self._source_path or self._source_name)
         self._set_document_enabled(True)
         self.statusBar().showMessage(
             f'已加载 · {self._page_img.size[0]}×{self._page_img.size[1]} px · 拖动选框或手柄调整范围')
@@ -759,18 +1075,20 @@ class MainWindow(QMainWindow):
         self._page_img = None
         self._wm_image = None
         self._source_path = ''
+        self._source_name = ''
         self.scene.clear()
         self.scene.setSceneRect(QRectF())
         self.view_page.resetTransform()
-        self.lbl_file.setText('未打开文件 · 拖入 PDF / 图片开始')
+        self.lbl_file.setText('未载入文件')
+        self.lbl_file.setMaximumWidth(self.lbl_file.fontMetrics().horizontalAdvance(self.lbl_file.text()) + 18)
         self.lbl_file.setToolTip('')
         for preview in self._preview_labels:
             preview.clear()
             preview.setText('请打开文件，或拖入文档预览区')
         self.lbl_wm_info.setText('底色仅用于预览，导出仍为透明背景。')
         self._update_bbox_label()
-        self.btn_open.show()
-        self._position_open_btn()
+        self.empty_card.show()
+        self._position_canvas_overlays()
         self._set_document_enabled(False)
         self.setWindowTitle('SigMarker — 签名水印提取')
         self.statusBar().showMessage('已关闭当前文件，可以继续打开或拖入新文件。')
@@ -799,11 +1117,12 @@ class MainWindow(QMainWindow):
 
     def _update_bbox_label(self):
         if self._crop_item is None:
-            self.lbl_bbox.setText('裁剪框: —')
+            self.lbl_bbox.setText('当前裁剪：暂无选区')
+            self.lbl_bbox.setToolTip('')
             return
         sr = self._crop_item.scene_rect()
-        self.lbl_bbox.setText(
-            f'裁剪框: ({int(sr.left())},{int(sr.top())}) {int(sr.width())}×{int(sr.height())}')
+        self.lbl_bbox.setText(f'当前裁剪：{int(sr.width())}×{int(sr.height())} px')
+        self.lbl_bbox.setToolTip(f'左上角：({int(sr.left())}, {int(sr.top())})')
 
     def _crop_pixels(self):
         """裁剪框 → 图像像素坐标 (与图像边界求交, 杜绝越界黑边)。返回 (x0,y0,x1,y1) 或 None。"""
@@ -824,7 +1143,7 @@ class MainWindow(QMainWindow):
     # ---------- 旋转 ----------
 
     def _rotate_page(self, degrees: int):
-        """顺时针旋转 degrees (正=顺时针, 负=逆时针)。重建 scene + 重新检测 bbox。"""
+        """顺时针旋转图像和当前选框, 保留用户选定的像素范围。"""
         if self._page_img is None:
             return
         # 只允许 90/180/270 度, 其他角度用 PIL 4 次采样避免插值糊
@@ -833,6 +1152,12 @@ class MainWindow(QMainWindow):
             degrees = round(degrees / 90) * 90
         if degrees % 360 == 0:
             return
+        rect = self._crop_item.scene_rect() if self._crop_item is not None else None
+        width, height = self._page_img.size
+        for _ in range((degrees % 360) // 90):
+            if rect is not None:
+                rect = QRectF(height - rect.bottom(), rect.left(), rect.height(), rect.width())
+            width, height = height, width
         self._page_img = self._page_img.rotate(-degrees, expand=True, fillcolor='white')
 
         pm = self._pil_to_qpixmap(self._page_img)
@@ -844,7 +1169,14 @@ class MainWindow(QMainWindow):
             self._pix_item.sceneBoundingRect(), QPen(QColor(90, 90, 90), 0))
         self.scene.setSceneRect(self._pix_item.sceneBoundingRect())
 
-        self._auto_detect_bbox()
+        if rect is None:
+            self._auto_detect_bbox()
+        else:
+            bounds = self._pix_item.sceneBoundingRect()
+            self._crop_item = CropRectItem(rect.intersected(bounds), bounds, rect_cb=self._on_crop_changed)
+            self.scene.addItem(self._crop_item)
+            self._update_bbox_label()
+            self._refresh_preview()
         self.view_page.fitInView(self._pix_item, Qt.AspectRatioMode.KeepAspectRatio)
         dir_str = '顺时针' if degrees > 0 else '逆时针'
         self.statusBar().showMessage(f'已{dir_str}旋转 {abs(degrees)}°')
@@ -863,7 +1195,7 @@ class MainWindow(QMainWindow):
             color_mode=color_map[self.cmb_color.currentIndex()],
             clear_background=self.chk_clear_bg.isChecked(),
             denoise=self.chk_denoise.isChecked(),
-            output_dpi=self.spn_output_dpi.value(),
+            output_dpi=self.cmb_output_dpi.value(),
         )
 
     def _on_params_changed(self, *_):
@@ -881,7 +1213,7 @@ class MainWindow(QMainWindow):
         self.cmb_color.setCurrentIndex({'black': 0, 'white': 1, 'original': 2}[d.color_mode])
         self.chk_clear_bg.setChecked(d.clear_background)
         self.chk_denoise.setChecked(d.denoise)
-        self.spn_output_dpi.setValue(d.output_dpi)
+        self.cmb_output_dpi.setValue(d.output_dpi)
 
     # ---------- 水印预览 ----------
 
@@ -907,8 +1239,8 @@ class MainWindow(QMainWindow):
     def _display_preview(self, *_):
         if self._wm_image is None:
             return
-        avail_w = max(min(preview.width() for preview in self._preview_labels) - 24, 10)
-        avail_h = max(min(preview.height() for preview in self._preview_labels) - 24, 10)
+        avail_w = max(min(preview.contentsRect().width() for preview in self._preview_labels), 10)
+        avail_h = max(min(preview.contentsRect().height() for preview in self._preview_labels), 10)
         disp = self._wm_image.copy()
         disp.thumbnail((avail_w, avail_h), Image.Resampling.LANCZOS)
         w, h = disp.size
@@ -1030,11 +1362,11 @@ class MainWindow(QMainWindow):
             if wm is None:
                 return
             default_dir = os.path.dirname(self._source_path)
-            if self._phone_photo is not None:
+            if self._phone_photo is not None or not self._source_path:
                 default_dir = (QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
                                or os.path.expanduser('~'))
             default_path = os.path.join(default_dir,
-                                        os.path.splitext(os.path.basename(self._source_path))[0] + '_签名')
+                                        os.path.splitext(self._source_name)[0] + '_签名')
 
             if kind == 'png':
                 path, _ = QFileDialog.getSaveFileName(
@@ -1071,6 +1403,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle(APP_STYLE)
+    app.setFont(QFont(APP_FONT_FAMILY, 9))
+    app.setWindowIcon(QIcon(str(APP_ICON)))
     w = MainWindow()
     w.show()
     sys.exit(app.exec())
