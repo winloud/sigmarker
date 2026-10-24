@@ -1,0 +1,13 @@
+# V0.1.0 Windows x64 runtime; CPython 3.10.7
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
+Pillow==12.2.0
+numpy==2.2.5
+PyMuPDF==1.24.14
+opencv-python==4.10.0.84
+pypdf==5.1.0
+qrcode==8.2
+pi-heif==1.4.0
+colorama==0.4.6
+typing_extensions==4.16.0

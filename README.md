@@ -9,6 +9,8 @@ Windows 桌面工具 · 手机扫码传图 · 透明 PNG / PDF · PDF-XChange �
 ![Windows](https://img.shields.io/badge/平台-Windows-0078D4?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square)
 ![PyQt6](https://img.shields.io/badge/界面-PyQt6-41CD52?style=flat-square)
+![版本](https://img.shields.io/badge/版本-V0.1.0-blue?style=flat-square)
+![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)
 
 [快速开始](#快速开始) · [手机扫码](#手机扫码) · [使用指南](docs/usage.md) · [开发与打包](docs/development.md) · [GitHub](https://github.com/winloud/sigmarker)
 
@@ -42,7 +44,7 @@ Windows 桌面工具 · 手机扫码传图 · 透明 PNG / PDF · PDF-XChange �
 3. 检查自动裁剪范围，拖动框体或手柄微调；必要时旋转图片、调整笔迹参数。
 4. 点击 **复制透明签名**，或导出 PNG / PDF。
 
-> 当前仓库尚未发布 GitHub Release 下载。已有便携包可直接使用；从源码获取项目时，请按 [开发与打包](docs/development.md) 生成便携包。默认构建入口为 `dist/SigMarker/SigMarker.exe`。
+> [下载 V0.1.0 Windows x64 便携包](https://github.com/winloud/sigmarker/releases/tag/v0.1.0)。完整解压后运行，保留 `_internal/` 和随包许可文件。发行页同时提供 SHA-256、本版源码及第三方源码归档；从源码构建请看 [开发与打包](docs/development.md)。
 
 ### 常用操作
 
@@ -76,7 +78,7 @@ Windows 桌面工具 · 手机扫码传图 · 透明 PNG / PDF · PDF-XChange �
 
 **为什么导出的 PNG 看起来仍是白底？** 图片查看器可能用白色显示透明区。使用软件的深灰预览检查透明边缘，或放到有颜色的文档背景上查看。
 
-**粘贴或盖章时大小不合适？** 调整右侧“导出 DPI”，并检查预览下方的毫米尺寸。DPI 越大，物理尺寸越小，像素数不变；接收软件仍可能自行缩放。
+**粘贴或盖章时大小不合适？** 调整右侧“导出 DPI”，并检查状态栏右侧的毫米尺寸。DPI 越大，物理尺寸越小，像素数不变；接收软件仍可能自行缩放。
 
 **自动选框包含了日期或正文？** 自动检测寻找的是笔迹范围，不识别姓名、日期或印刷文字的含义。拖动裁剪框，留下需要的部分即可。
 
@@ -94,3 +96,11 @@ Windows 桌面工具 · 手机扫码传图 · 透明 PNG / PDF · PDF-XChange �
 - [使用指南](docs/usage.md)：笔迹参数、DPI、图章导入、手机网络与临时文件。
 - [开发与打包](docs/development.md)：源码运行、回归验证、便携包构建与项目结构。
 - [问题反馈](https://github.com/winloud/sigmarker/issues)：请提供复现步骤、文件格式、图像尺寸和运行环境；示例图片请先脱敏，优先使用合成笔迹。
+
+## 开源许可与诊断
+
+Copyright © 2026 winloud。本项目采用 [AGPL-3.0-only](LICENSE)，第三方组件保留各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md) 和 [源码获取说明](SOURCE_CODE.md)。软件按许可证提供，不作担保。
+
+关于窗口显示版本号并可主动复制诊断信息，只包含软件、Python、Qt、Windows 和架构信息。程序不自动上传诊断数据。本地错误日志位于 `%LOCALAPPDATA%\SigMarker\logs\`，最多保留三个文件、每个约 512 KiB；不写入图像、输入文件路径、异常正文或扫码令牌，可直接删除。反馈前请自行检查日志和附件。
+
+V0.1.0 提供 Windows x64 便携包，当前使用 Windows 11 环境构建验证；其他 Windows 版本尚未单独实机验收。[查看更新记录](CHANGELOG.md)

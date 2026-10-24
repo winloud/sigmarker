@@ -9,6 +9,8 @@ def main():
         from sigmarker.package_smoke import run
         return run(sys.argv[2] if len(sys.argv) > 2 else None)
 
+    from sigmarker.diagnostics import configure
+    configure()
     from sigmarker.app import main as run_app
     return run_app()
 

@@ -21,6 +21,30 @@ from sigmarker.sigextract import WatermarkParams, detect_ink_bbox, export_pdf, e
 from sigmarker.clipboard_image import clipboard_payloads, set_windows_clipboard
 
 
+def test_about_version_and_diagnostics_copy_use_existing_menu(qt_app, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QDialogButtonBox
+    from sigmarker.metadata import APP_VERSION
+    copied = []
+    clipboard = type('FakeClipboard', (), {'setText': lambda self, text: copied.append(text)})()
+    monkeypatch.setattr(QApplication, 'clipboard', lambda: clipboard)
+
+    def inspect_dialog(dialog):
+        text = '\n'.join(label.text() for label in dialog.findChildren(QLabel))
+        assert f'V{APP_VERSION}' in text and 'AGPL-3.0-only' in text
+        buttons = dialog.findChild(QDialogButtonBox).buttons()
+        next(button for button in buttons if button.text() == '复制诊断信息').click()
+        return 0
+
+    monkeypatch.setattr(QDialog, 'exec', inspect_dialog)
+    window = MainWindow()
+    try:
+        assert [a.text() for a in window.menuBar().actions()] == ['文件', '关于']
+        window.menuBar().actions()[1].menu().actions()[0].trigger()
+        assert len(copied) == 1 and f'V{APP_VERSION}' in copied[0]
+    finally:
+        window.close()
+
+
 def signature_sample(ink=25, offset=(180, 150), shadow=False):
     h, w = 420, 720
     yy, xx = np.mgrid[:h, :w]
@@ -294,7 +318,11 @@ def test_copy_uses_selected_dpi_and_remembers_it(qt_app, tmp_path, monkeypatch):
         assert clipboard.mime.imageData().dotsPerMeterX() * .0254 == pytest.approx(600, abs=.02)
     assert '600 DPI' in window.statusBar().currentMessage() and 'mm' in window.statusBar().currentMessage()
     window._refresh_preview()
-    assert '600 DPI' in window.lbl_wm_info.text()
+    assert '600 DPI' in window.lbl_output_size.text()
+    assert window.lbl_output_size.parentWidget() is window.statusBar()
+    size_info = window.lbl_output_size.text()
+    window.statusBar().showMessage('已导出测试文件')
+    assert window.lbl_output_size.text() == size_info
     window.close()
     restored = MainWindow()
     try:
@@ -479,6 +507,7 @@ def test_preview_drop_reload_close_and_center(qt_app, tmp_path):
         assert window.lbl_wm_dark.pixmap().size() == window.lbl_wm_white.pixmap().size()
         window._on_crop_changed(); window._close_file(); qt_app.processEvents()
         assert window._page_img is None and window._crop_item is None
+        assert window.lbl_output_size.text() == ''
         assert window.btn_open.isVisible() and not window.btn_export_png.isEnabled()
         assert not window.btn_add_stamp.isEnabled()
         assert all(preview.pixmap() is None or preview.pixmap().isNull() for preview in window._preview_labels)

@@ -20,7 +20,9 @@ def qr_matches(image, expected):
 
 
 def run(report_path=None):
+    from .metadata import APP_VERSION
     report = {'ok': False, 'frozen': bool(getattr(sys, 'frozen', False)), 'checks': []}
+    report['version'] = APP_VERSION
     destination = Path(report_path) if report_path else Path(sys.executable).with_name('self-test.json')
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     window = None
@@ -37,11 +39,14 @@ def run(report_path=None):
         from PyQt6 import QtCore, QtNetwork
         from PyQt6.QtCore import QPointF, QRectF, QSettings
         from PyQt6.QtWidgets import QApplication
-        from .app import MainWindow, APP_STYLE
+        from .app import MainWindow, APP_STYLE, APP_FONT_FAMILY
+        from PyQt6.QtGui import QFont, QFontDatabase
         from .sigextract import export_pdf, export_png
 
         report['checks'].append('Qt/QtNetwork/OpenCV/numpy/Pillow/PDF/pypdf/qrcode/pi-heif imports')
         report['qt_version'] = QtCore.QT_VERSION_STR
+        report['native_versions'] = {'opencv': cv2.__version__, 'mupdf': fitz.version[1],
+                                     'heif': pi_heif.libheif_info()}
         report['module_paths'] = {name: module.__file__ for name, module in (
             ('QtCore', QtCore), ('QtNetwork', QtNetwork), ('cv2', cv2), ('numpy', np),
             ('Pillow', Image), ('fitz', fitz), ('pypdf', pypdf), ('qrcode', qrcode),
@@ -50,10 +55,19 @@ def run(report_path=None):
             bundle = Path(sys._MEIPASS).resolve()
             assert all(Path(path).resolve().is_relative_to(bundle)
                        for path in report['module_paths'].values()), 'Runtime escaped the bundle'
+            product_folder = Path(sys.executable).parent
+            for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'SOURCE_CODE.md',
+                         'requirements-lock.txt', 'CHANGELOG.md'):
+                assert (product_folder / name).is_file(), f'Missing release document: {name}'
+            assert (product_folder / 'licenses' / 'GPL-3.0-only.txt').is_file()
+            report['checks'].append('Release version and bundled license/source notices')
 
         app = QApplication.instance() or QApplication([])
         assert app.platformName() == 'offscreen'
+        if sys.platform == 'win32' and not QFontDatabase.families():
+            assert QFontDatabase.addApplicationFont(str(Path(os.environ['WINDIR']) / 'Fonts' / 'msyh.ttc')) >= 0
         app.setStyle(APP_STYLE)
+        app.setFont(QFont(APP_FONT_FAMILY, 9))
         assert app.style().objectName().lower() == APP_STYLE
         report['app_style'] = app.style().objectName()
         settings_folder = tempfile.TemporaryDirectory(prefix='sigmarker-settings-')
@@ -135,7 +149,8 @@ def run(report_path=None):
             window.cmb_output_dpi.activated.emit(window.cmb_output_dpi.findData(dpi))
             assert window.cmb_output_dpi.currentText() == str(dpi)
             window._refresh_preview()
-            assert '600 DPI' in window.lbl_wm_info.text() and 'mm' in window.lbl_wm_info.text()
+            assert '600 DPI' in window.lbl_output_size.text() and 'mm' in window.lbl_output_size.text()
+            assert window.lbl_output_size.parentWidget() is window.statusBar()
             from .clipboard_image import clipboard_payloads, _win32_libraries
             payloads = clipboard_payloads(watermark, dpi)
             assert struct.unpack_from('<ii', payloads[17], 24) == (round(dpi / .0254),) * 2
@@ -181,6 +196,7 @@ def run(report_path=None):
             report['checks'].append('PDF-XChange stamp append, registry preservation, exact backup on synthetic collection')
             window._close_file()
             assert window._page_img is None and window._crop_item is None
+            assert not window.lbl_output_size.text()
             window._load_path(str(source))
             assert window._wm_image is not None
             report['checks'].append('Close document and reopen')

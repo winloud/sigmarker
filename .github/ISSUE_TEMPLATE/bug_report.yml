@@ -1,0 +1,24 @@
+name: 问题反馈
+description: 报告 SigMarker 的运行或提取问题
+body:
+  - type: markdown
+    attributes:
+      value: 请使用合成笔迹复现，避免上传真实签名、完整原图或手机扫码链接。提交前检查附件是否包含个人信息。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与运行环境
+      description: 可从“关于 SigMarker”复制诊断信息。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤、实际结果与预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: 文件格式、尺寸及脱敏示例
+      description: 请注明是否使用手机导入，图片是否带阴影或淡墨；可附经过检查的本地错误日志。

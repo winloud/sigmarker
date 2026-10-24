@@ -42,12 +42,13 @@ from .stamp_import import append_stamp
 from .clipboard_image import clipboard_payloads, set_windows_clipboard
 from .image_io import load_image
 from .phone_dialog import PhoneImportDialog
+from .metadata import APP_NAME, APP_VERSION, APP_AUTHOR, APP_LICENSE, REPOSITORY_URL
+from .diagnostics import environment_info, record_error
 
 # 支持拖入/打开的扩展名
 _SUPPORTED_EXTS = ('.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.heic', '.heif')
 APP_STYLE = 'windows11'
 APP_FONT_FAMILY = 'Microsoft YaHei'
-REPOSITORY_URL = 'https://github.com/winloud/sigmarker'
 APP_ICON = Path(__file__).with_name('assets') / 'sigmarker.ico'
 
 
@@ -390,6 +391,10 @@ class MainWindow(QMainWindow):
             QStatusBar { background: #ffffff; border-top: 1px solid #e0e4e9; }
             QStatusBar::item { border: none; }
         ''')
+        self.lbl_output_size = QLabel('')
+        self.lbl_output_size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_output_size.setContentsMargins(8, 0, 8, 0)
+        self.statusBar().addPermanentWidget(self.lbl_output_size)
 
         # 拖放打开
         self.setAcceptDrops(True)
@@ -692,9 +697,6 @@ class MainWindow(QMainWindow):
         self.lbl_wm_dark, self.lbl_wm_white = preview_labels
         self._preview_labels = preview_labels
         bottom_layout.addLayout(preview_row, 1)
-        self.lbl_wm_info = QLabel('底色仅用于预览，复制和导出保持透明。')
-        self.lbl_wm_info.setWordWrap(True)
-        bottom_layout.addWidget(self.lbl_wm_info)
         for preview in preview_labels:
             preview.installEventFilter(self)
 
@@ -931,15 +933,19 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle('关于 SigMarker')
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
-        title = QLabel('<h2>SigMarker</h2>签名水印提取工具')
+        title = QLabel(f'<h2>SigMarker V{APP_VERSION}</h2>签名水印提取工具')
         layout.addWidget(title)
         description = QLabel('从扫描件或手机照片提取手写签名，\n导出透明 PNG / PDF，用于文件水印。')
         layout.addWidget(description)
+        layout.addWidget(QLabel(f'Copyright © 2026 {APP_AUTHOR} · {APP_LICENSE}\n'
+                                '开源软件，按许可证提供，不作担保。'))
         repository = QLabel(f'GitHub 仓库：<br><a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a>')
         repository.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         repository.linkActivated.connect(self._open_repository)
         layout.addWidget(repository)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy_info = buttons.addButton('复制诊断信息', QDialogButtonBox.ButtonRole.ActionRole)
+        copy_info.clicked.connect(lambda: QApplication.clipboard().setText(environment_info()))
         buttons.button(QDialogButtonBox.StandardButton.Close).setText('关闭')
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -969,6 +975,7 @@ class MainWindow(QMainWindow):
             page_img, _ = load_image(BytesIO(bytes(buffer.data())))
             self._load_page_image(page_img, '', display_name='剪贴板图片')
         except Exception as error:
+            record_error('paste', error)
             QMessageBox.warning(self, '粘贴失败', str(error))
 
     def _open_phone_import(self):
@@ -990,6 +997,7 @@ class MainWindow(QMainWindow):
         try:
             self._load_page_image(photo.image, str(photo.path))
         except Exception as error:
+            record_error('phone-load', error)
             QMessageBox.warning(self, '加载失败', str(error))
             return False
         self._phone_photo = photo
@@ -1013,6 +1021,7 @@ class MainWindow(QMainWindow):
                 page_img, _ = load_image(path)
             self._load_page_image(page_img, path)
         except Exception as e:
+            record_error('load', e)
             QMessageBox.critical(self, '加载失败', str(e))
             return
 
@@ -1085,7 +1094,7 @@ class MainWindow(QMainWindow):
         for preview in self._preview_labels:
             preview.clear()
             preview.setText('请打开文件，或拖入文档预览区')
-        self.lbl_wm_info.setText('底色仅用于预览，导出仍为透明背景。')
+        self.lbl_output_size.clear()
         self._update_bbox_label()
         self.empty_card.show()
         self._position_canvas_overlays()
@@ -1231,6 +1240,8 @@ class MainWindow(QMainWindow):
             self._display_preview()
         except Exception as error:
             self._wm_image = None
+            record_error('preview', error)
+            self.lbl_output_size.clear()
             for preview in self._preview_labels:
                 preview.clear()
                 preview.setText('预览失败，请调整范围或重新打开文件。')
@@ -1252,9 +1263,8 @@ class MainWindow(QMainWindow):
         empty = self._wm_image.getchannel('A').getbbox() is None
         dpi = self._params.output_dpi
         width_mm, height_mm = (pixels / dpi * 25.4 for pixels in self._wm_image.size)
-        self.lbl_wm_info.setText('未检测到墨迹，请调整范围或增大淡墨保留。' if empty else
-            f'{self._wm_image.width}×{self._wm_image.height} px · {width_mm:.1f}×{height_mm:.1f} mm · {dpi} DPI\n'
-            '底色仅用于预览，复制和导出保持透明')
+        self.lbl_output_size.setText('未检测到墨迹，请调整范围或增大淡墨保留。' if empty else
+            f'{self._wm_image.width}×{self._wm_image.height} px · {width_mm:.1f}×{height_mm:.1f} mm · {dpi} DPI')
 
     def _add_stamp(self):
         wm = self._watermark_for_export()
@@ -1305,6 +1315,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, '图章添加失败',
                 '图章文件被占用或目录无写入权限，本次未替换原文件。\n可关闭 PDF-XChange 后重试，或选择允许写入的图章集合。')
         except Exception as error:
+            record_error('stamp', error)
             QMessageBox.warning(self, '图章添加失败', str(error))
 
     def _watermark_for_export(self):
@@ -1329,6 +1340,7 @@ class MainWindow(QMainWindow):
             else:
                 QApplication.clipboard().setMimeData(self._watermark_mime_data(wm, dpi))
         except Exception as error:
+            record_error('copy', error)
             QMessageBox.warning(self, '复制失败', str(error))
             return
         width_mm, height_mm = (pixels / dpi * 25.4 for pixels in wm.size)
@@ -1387,6 +1399,7 @@ class MainWindow(QMainWindow):
 
             self.statusBar().showMessage(f'已导出: {path}')
         except Exception as e:
+            record_error('export', e)
             QMessageBox.critical(self, '导出失败', str(e))
 
     # ---------- PIL -> QPixmap (RGB, bytes 命名引用防 GC) ----------
@@ -1402,6 +1415,9 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName(APP_AUTHOR)
     app.setStyle(APP_STYLE)
     app.setFont(QFont(APP_FONT_FAMILY, 9))
     app.setWindowIcon(QIcon(str(APP_ICON)))

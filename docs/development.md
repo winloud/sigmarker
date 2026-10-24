@@ -19,6 +19,30 @@ python -m sigmarker.sigextract --help
 
 包内模块通过包导入，不直接运行 `sigmarker/` 内的脚本。正式启动使用 Qt `windows11` 样式。
 
+V0.1.0 的实际构建环境为 Windows x64 / CPython 3.10.7。重建发行版时请使用独立环境和固定依赖：
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-build.txt
+```
+
+`requirements-lock.txt` 固定运行依赖及传递依赖；`requirements-build.txt` 在此基础上固定 pytest、PyInstaller 和构建工具。`requirements.txt` 仍是普通源码安装入口。
+
+## 版本与开源发行
+
+`sigmarker/metadata.py` 中的 `APP_VERSION` 是程序、关于窗口、EXE 版本属性和成品自检的唯一版本来源。显示版本为 V0.1.0，Git 标签为 `v0.1.0`。
+
+项目采用 AGPL-3.0-only；源码和便携包必须保留 LICENSE、THIRD_PARTY_NOTICES.md、SOURCE_CODE.md 及 licenses/。Qt、MuPDF、libheif/libde265 等组件保留其自身许可。
+
+固定环境安装后，`python scripts/prepare_release.py --sources` 收集上游许可证并下载 `third_party_sources.json` 指定的源码到 `.verification/release-sources/`；已有清单时核对 SHA-256，不运行任何上游安装或构建脚本。首次维护清单须核对原生库实际版本：pi-heif 1.4.0 的 wheel 自带说明仍列旧版本，实际 Windows wheel 解码器报告 libheif 1.23.0、libde265 1.1.1，以实测版本为准。
+
+发行时先运行完整回归和下述成品自检；将整个 SigMarker/ 目录压成 `SigMarker-v0.1.0-windows-x64.zip`。从发行提交制作 `SigMarker-v0.1.0-source.zip`，将清单中的归档及构建说明压成 `SigMarker-v0.1.0-third-party-sources.zip`。同一 GitHub Release 同时提供三个 ZIP、SHA256SUMS.txt、更新记录及明确的验收范围；标签与二进制须对应同一提交。
+
+发行输入提交后，从干净工作区构建并自检，再运行 `python scripts/package_release.py`，在 `dist/release/` 生成上述三个 ZIP 和校验文件。脚本要求工作区干净、便携包完整且第三方源码哈希一致。发布前还需解压最终 ZIP 并实际运行其中 EXE 的 `--self-test`，核对 EXE 版本与 Git 提交。
+
+本地诊断在加载 Qt 前初始化，错误只保留异常类型及内部模块/函数/行号。更改诊断时运行 `tests/test_release.py`，避免把异常正文、用户文件路径或扫码令牌写入日志。测试使用临时日志和模拟剪贴板。
+
 ## 回归验证
 
 pytest 是开发工具，安装后执行：
