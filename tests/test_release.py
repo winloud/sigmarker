@@ -31,9 +31,11 @@ def test_error_log_omits_private_exception_text_and_source(tmp_path):
 
 
 def test_diagnostics_copy_has_version_without_document_or_user_details():
+    from PyQt6.QtCore import qVersion
     content = diagnostics.environment_info()
     assert f'SigMarker V{APP_VERSION}' in content and 'Qt:' in content
     assert 'AGPL-3.0-only' in content
+    assert f'Qt: {qVersion()};' in content
     assert 'token' not in content.lower() and 'Users' not in content
 
 

@@ -44,7 +44,7 @@ def run(report_path=None):
         from .sigextract import export_pdf, export_png
 
         report['checks'].append('Qt/QtNetwork/OpenCV/numpy/Pillow/PDF/pypdf/qrcode/pi-heif imports')
-        report['qt_version'] = QtCore.QT_VERSION_STR
+        report['qt_version'] = QtCore.qVersion()
         report['native_versions'] = {'opencv': cv2.__version__, 'mupdf': fitz.version[1],
                                      'heif': pi_heif.libheif_info()}
         report['module_paths'] = {name: module.__file__ for name, module in (

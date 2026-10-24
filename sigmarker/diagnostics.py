@@ -23,12 +23,12 @@ def log_directory():
 
 def environment_info():
     """User-controlled copy; never includes usernames, input paths or network tokens."""
-    from PyQt6.QtCore import QT_VERSION_STR, PYQT_VERSION_STR
+    from PyQt6.QtCore import qVersion, PYQT_VERSION_STR
     return '\n'.join((
         f'{APP_NAME} V{APP_VERSION}', f'License: {APP_LICENSE}',
         f'Windows: {platform.win32_ver()[0]} {platform.win32_ver()[1]}',
         f'Architecture: {platform.machine()}', f'Python: {platform.python_version()}',
-        f'Qt: {QT_VERSION_STR}; PyQt: {PYQT_VERSION_STR}',
+        f'Qt: {qVersion()}; PyQt: {PYQT_VERSION_STR}',
         f'Packaged: {bool(getattr(sys, "frozen", False))}',
     ))
 
