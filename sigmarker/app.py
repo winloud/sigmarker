@@ -930,6 +930,7 @@ class MainWindow(QMainWindow):
 
     def _show_about(self):
         dialog = QDialog(self)
+        dialog.setPalette(self.palette())
         dialog.setWindowTitle('关于 SigMarker')
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
@@ -944,6 +945,9 @@ class MainWindow(QMainWindow):
         repository.linkActivated.connect(self._open_repository)
         layout.addWidget(repository)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.setStyleSheet('QPushButton { color: #20242a; background: #ffffff; '
+                              'border: 1px solid #d5d9df; border-radius: 4px; padding: 5px 10px; }'
+                              'QPushButton:hover { background: #edf3fc; }')
         copy_info = buttons.addButton('复制诊断信息', QDialogButtonBox.ButtonRole.ActionRole)
         copy_info.clicked.connect(lambda: QApplication.clipboard().setText(environment_info()))
         buttons.button(QDialogButtonBox.StandardButton.Close).setText('关闭')
